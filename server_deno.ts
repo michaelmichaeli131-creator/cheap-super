@@ -1,34 +1,26 @@
 /// <reference no-default-lib="true"/>
 import { Hono } from "@hono/hono";
-// חשוב: אדפטור Deno כדי להגיש קבצים סטטיים (מתקן את getContent)
 import { serveStatic } from "@hono/hono/deno";
 import OpenAI from "@openai/openai";
 
-/** ===== Bindings (Env) ===== */
 type Bindings = {
   OPENAI_API_KEY: string;
   OPENAI_MODEL?: string;
 };
 
-/** ===== App ===== */
 const app = new Hono<{ Bindings: Bindings }>();
 
-/** ===== Static (UI) ===== */
 app.use("/", serveStatic({ root: "./public" }));
 
-/** ===== Helpers (ENV, client, prompts) ===== */
 function getOpenAIClient(apiKey: string) {
   return new OpenAI({ apiKey });
 }
 
 function readEnv(c: any) {
   const key =
-    (c?.env?.OPENAI_API_KEY as string | undefined) ??
-    Deno.env.get("OPENAI_API_KEY");
+    (c?.env?.OPENAI_API_KEY as string | undefined) ?? Deno.env.get("OPENAI_API_KEY");
   const model =
-    (c?.env?.OPENAI_MODEL as string | undefined) ??
-    Deno.env.get("OPENAI_MODEL") ??
-    "gpt-4o";
+    (c?.env?.OPENAI_MODEL as string | undefined) ?? Deno.env.get("OPENAI_MODEL") ?? "gpt-4o";
   return { key, model };
 }
 
@@ -37,7 +29,7 @@ You are an autonomous, tool-using price-comparison agent for groceries in Israel
 
 Objective
 - Collect user's address or city, shopping list (name + optional quantity), and search radius (km).
-- Using ONLY your own tools (web browsing, code execution, file I/O) and public "Price Transparency" feeds
+- Using ONLY your own tools (web browsing and your internal reasoning) and public "Price Transparency" feeds
   from Israeli retailers, you must:
   1) Geocode the address/city to lat/lng.
   2) Discover and download the official retailer transparency files (stores, prices, promotions).
@@ -113,11 +105,7 @@ Operational Guidance
 - Determinism: do not ask the user for approval mid-computation. Either compute and return "ok", or return "need_input"/"no_results"/"error" with minimal explanation in JSON fields only.
 `.trim();
 
-function buildSearchUserPrompt(
-  address = "",
-  radius_km: number | string = "",
-  items: string[] = []
-) {
+function buildSearchUserPrompt(address = "", radius_km: number | string = "", items: string[] = []) {
   const listBlock = items.map((s) => String(s).trim()).filter(Boolean).join("\n");
   return `
 Task: Compute the three cheapest supermarket branches within the given radius and return SearchResults JSON.
@@ -137,15 +125,17 @@ branch_id=${branch_id}
 `.trim();
 }
 
-/** ===== Core LLM call (web + code tools) ===== */
 async function callLLM(userPrompt: string, client: OpenAI, model: string) {
   try {
     const resp = await client.responses.create({
       model,
-      // חשוב: Responses API משתמש ב-instructions (לא system)
       instructions: SYSTEM_PROMPT,
       input: userPrompt,
-      tools: [{ type: "web_search" }, { type: "code_interpreter" }],
+      // השארנו רק web_search כדי לעקוף את דרישת 'container' של code_interpreter
+      tools: [{ type: "web_search" }],
+      // אפשר גם להשמיט לגמרי את tools אם תרצה:
+      // (אבל עדיף להשאיר web_search כדי לאפשר גלישה)
+      // tools: [],
     });
 
     const text =
@@ -153,9 +143,7 @@ async function callLLM(userPrompt: string, client: OpenAI, model: string) {
       (Array.isArray((resp as any).output)
         ? (resp as any).output
             .map((o: any) =>
-              Array.isArray(o.content)
-                ? o.content.map((c: any) => c.text || "").join("\n")
-                : ""
+              Array.isArray(o.content) ? o.content.map((c: any) => c.text || "").join("\n") : ""
             )
             .join("\n")
         : JSON.stringify(resp));
@@ -175,12 +163,8 @@ async function callLLM(userPrompt: string, client: OpenAI, model: string) {
   }
 }
 
-/** ===== Routes ===== */
-
-// Health check
 app.get("/health", (c) => c.text("ok"));
 
-// TOP-3 cheapest search
 app.post("/api/search", async (c) => {
   try {
     const { key, model } = readEnv(c);
@@ -198,7 +182,6 @@ app.post("/api/search", async (c) => {
   }
 });
 
-// Branch breakdown
 app.post("/api/details", async (c) => {
   try {
     const { key, model } = readEnv(c);
@@ -216,5 +199,4 @@ app.post("/api/details", async (c) => {
   }
 });
 
-/** ===== Export handler (Deno Deploy) ===== */
 export default { fetch: app.fetch };
