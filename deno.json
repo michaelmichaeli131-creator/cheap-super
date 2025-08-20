@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "dev": "deno run -A --watch server_deno.ts"
+  },
+  "imports": {
+    "@hono/hono": "jsr:@hono/hono",
+    "@hono/serve-static": "jsr:@hono/serve-static",
+    "@openai/openai": "jsr:@openai/openai"
+  }
+}

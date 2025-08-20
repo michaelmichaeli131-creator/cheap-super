@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@hono/hono": "jsr:@hono/hono@^4.5.7",
+    "@hono/serve-static": "jsr:@hono/serve-static@^0.2.1",
+    "@openai/openai": "jsr:@openai/openai@^1.0.0"
+  }
+}
