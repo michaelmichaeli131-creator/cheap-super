@@ -1,7 +1,8 @@
 /// <reference no-default-lib="true"/>
 import { Hono } from "@hono/hono";
-import { serveStatic } from "@hono/hono/middleware";
+import { serveStatic } from "@hono/hono/serve-static"; // ← זה הנכון לגרסה 4.9.2
 import OpenAI from "@openai/openai";
+
 
 // קריאת סודות מהסביבה של Deno Deploy
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
