@@ -1,6 +1,6 @@
 /// <reference no-default-lib="true"/>
 import { Hono } from "@hono/hono";
-// חשוב: באדפטור של Deno כדי להגיש קבצים סטטיים ללא השגיאה getContent
+// חשוב: אדפטור Deno כדי להגיש קבצים סטטיים (מתקן את getContent)
 import { serveStatic } from "@hono/hono/deno";
 import OpenAI from "@openai/openai";
 
@@ -142,7 +142,8 @@ async function callLLM(userPrompt: string, client: OpenAI, model: string) {
   try {
     const resp = await client.responses.create({
       model,
-      system: SYSTEM_PROMPT,
+      // חשוב: Responses API משתמש ב-instructions (לא system)
+      instructions: SYSTEM_PROMPT,
       input: userPrompt,
       tools: [{ type: "web_search" }, { type: "code_interpreter" }],
     });
@@ -164,9 +165,7 @@ async function callLLM(userPrompt: string, client: OpenAI, model: string) {
     } catch {
       const m = String(text).match(/\{[\s\S]*\}/);
       if (m) {
-        try {
-          return JSON.parse(m[0]);
-        } catch {}
+        try { return JSON.parse(m[0]); } catch {}
       }
       return { status: "error", message: "Model did not return valid JSON", raw: text };
     }
