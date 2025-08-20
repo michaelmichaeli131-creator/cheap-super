@@ -1,6 +1,7 @@
 /// <reference no-default-lib="true"/>
 import { Hono } from "@hono/hono";
-import { serveStatic } from "@hono/hono/serve-static";
+// חשוב: באדפטור של Deno כדי להגיש קבצים סטטיים ללא השגיאה getContent
+import { serveStatic } from "@hono/hono/deno";
 import OpenAI from "@openai/openai";
 
 /** ===== Bindings (Env) ===== */
@@ -138,62 +139,82 @@ branch_id=${branch_id}
 
 /** ===== Core LLM call (web + code tools) ===== */
 async function callLLM(userPrompt: string, client: OpenAI, model: string) {
-  const resp = await client.responses.create({
-    model,
-    system: SYSTEM_PROMPT,
-    input: userPrompt,
-    tools: [{ type: "web_search" }, { type: "code_interpreter" }],
-  });
-
-  const text =
-    (resp as any).output_text ??
-    (Array.isArray((resp as any).output)
-      ? (resp as any).output
-          .map((o: any) =>
-            Array.isArray(o.content) ? o.content.map((c: any) => c.text || "").join("\n") : ""
-          )
-          .join("\n")
-      : JSON.stringify(resp));
-
   try {
-    return JSON.parse(String(text).trim());
-  } catch {
-    const m = String(text).match(/\{[\s\S]*\}/);
-    if (m) {
-      try {
-        return JSON.parse(m[0]);
-      } catch {}
+    const resp = await client.responses.create({
+      model,
+      system: SYSTEM_PROMPT,
+      input: userPrompt,
+      tools: [{ type: "web_search" }, { type: "code_interpreter" }],
+    });
+
+    const text =
+      (resp as any).output_text ??
+      (Array.isArray((resp as any).output)
+        ? (resp as any).output
+            .map((o: any) =>
+              Array.isArray(o.content)
+                ? o.content.map((c: any) => c.text || "").join("\n")
+                : ""
+            )
+            .join("\n")
+        : JSON.stringify(resp));
+
+    try {
+      return JSON.parse(String(text).trim());
+    } catch {
+      const m = String(text).match(/\{[\s\S]*\}/);
+      if (m) {
+        try {
+          return JSON.parse(m[0]);
+        } catch {}
+      }
+      return { status: "error", message: "Model did not return valid JSON", raw: text };
     }
-    return { status: "error", message: "Model did not return valid JSON", raw: text };
+  } catch (e: any) {
+    console.error("LLM error:", e?.message || e);
+    return { status: "error", message: `LLM request failed: ${String(e?.message || e)}` };
   }
 }
 
 /** ===== Routes ===== */
 
+// Health check
+app.get("/health", (c) => c.text("ok"));
+
 // TOP-3 cheapest search
 app.post("/api/search", async (c) => {
-  const { key, model } = readEnv(c);
-  if (!key) return c.json({ status: "error", message: "OPENAI_API_KEY missing" }, 500);
+  try {
+    const { key, model } = readEnv(c);
+    if (!key) return c.json({ status: "error", message: "OPENAI_API_KEY missing" }, 500);
 
-  const client = getOpenAIClient(key);
-  const body = await c.req.json().catch(() => ({}));
-  const { address = "", radius_km = "", items = [] } = body ?? {};
-  const userPrompt = buildSearchUserPrompt(address, radius_km, items);
-  const out = await callLLM(userPrompt, client, model);
-  return c.json(out);
+    const client = getOpenAIClient(key);
+    const body = await c.req.json().catch(() => ({}));
+    const { address = "", radius_km = "", items = [] } = body ?? {};
+    const userPrompt = buildSearchUserPrompt(address, radius_km, items);
+    const out = await callLLM(userPrompt, client, model);
+    return c.json(out);
+  } catch (e: any) {
+    console.error("search route error:", e);
+    return c.json({ status: "error", message: "internal_error" }, 500);
+  }
 });
 
 // Branch breakdown
 app.post("/api/details", async (c) => {
-  const { key, model } = readEnv(c);
-  if (!key) return c.json({ status: "error", message: "OPENAI_API_KEY missing" }, 500);
+  try {
+    const { key, model } = readEnv(c);
+    if (!key) return c.json({ status: "error", message: "OPENAI_API_KEY missing" }, 500);
 
-  const client = getOpenAIClient(key);
-  const body = await c.req.json().catch(() => ({}));
-  const { branch_id = "" } = body ?? {};
-  const userPrompt = buildDetailsUserPrompt(branch_id);
-  const out = await callLLM(userPrompt, client, model);
-  return c.json(out);
+    const client = getOpenAIClient(key);
+    const body = await c.req.json().catch(() => ({}));
+    const { branch_id = "" } = body ?? {};
+    const userPrompt = buildDetailsUserPrompt(branch_id);
+    const out = await callLLM(userPrompt, client, model);
+    return c.json(out);
+  } catch (e: any) {
+    console.error("details route error:", e);
+    return c.json({ status: "error", message: "internal_error" }, 500);
+  }
 });
 
 /** ===== Export handler (Deno Deploy) ===== */
