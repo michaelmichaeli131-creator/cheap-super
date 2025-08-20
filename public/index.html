@@ -1,158 +1,83 @@
-<!doctype html>
-<html lang="he" dir="rtl">
+<!DOCTYPE html>
+<html lang="he">
 <head>
-  <meta charset="utf-8" />
-  <title>השוואת סל – הכל ע״י AI</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8">
+  <title>מחשב קניות זול ביותר</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
-    .row { display: flex; gap: .75rem; margin-bottom: .75rem; }
-    input, textarea, button { padding: .6rem; font-size: 1rem; }
-    textarea { width: 100%; height: 8rem; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 1rem; margin-top: 1rem; }
-    .btn { background: black; color: white; border: none; border-radius: 8px; cursor: pointer; }
-    .muted { color: #666; font-size: .9rem; }
-    table { width: 100%; border-collapse: collapse; margin-top: .5rem;}
-    th, td { border-bottom: 1px solid #eee; padding: .5rem .25rem; text-align: start; }
-    .link { color: #0066cc; cursor: pointer; text-decoration: underline; }
-    .grid { display: grid; grid-template-columns: 1fr auto; align-items: center; }
-    .error { background:#ffecec; border:1px solid #f5a9a9; color:#b30000; padding:.75rem; border-radius:8px; margin-top:1rem; white-space:pre-wrap; }
+    body { font-family: Arial, sans-serif; direction: rtl; margin: 30px; }
+    textarea { width: 100%; height: 100px; }
+    input, button { margin: 5px 0; padding: 8px; font-size: 16px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: right; }
+    th { background: #f5f5f5; }
+    .error { color: red; margin-top: 10px; }
   </style>
 </head>
 <body>
-  <h1>השוואת סל – הכל ע״י AI</h1>
+  <h1>מצא את סל הקניות הזול ביותר</h1>
 
-  <div class="row">
-    <input id="address" placeholder="עיר / כתובת (למשל: בן יהודה 32, תל אביב)" style="flex:2" />
-    <input id="radius" type="number" min="1" step="1" value="5" style="width:8rem" />
-    <button class="btn" id="run">מצא לי את הזול</button>
-  </div>
+  <label for="items">רשימת קניות (שורה לכל פריט):</label><br>
+  <textarea id="items" placeholder="חלב 3% 1 ליטר\nלחם שחור\nביצים תריסר"></textarea><br>
 
-  <textarea id="items" placeholder="רשימת קניות (שורה לכל פריט; כמות אופציונלית עם ;qty)
-חלב 3% 1 ל';2
-לחם פרוס;1
-ביצים L תריסר;1"></textarea>
+  <label for="address">כתובת:</label><br>
+  <input type="text" id="address" value="בן יהודה 32, תל אביב"><br>
 
+  <label for="radius">רדיוס (בק״מ):</label><br>
+  <input type="number" id="radius" value="3"><br>
+
+  <button onclick="findCheapest()">מצא לי את הזול ביותר</button>
+
+  <div id="error" class="error"></div>
   <div id="results"></div>
 
   <script>
-    const qs = s => document.querySelector(s);
+    async function findCheapest() {
+      const itemsText = document.getElementById("items").value.trim();
+      const address = document.getElementById("address").value.trim();
+      const radius = document.getElementById("radius").value.trim();
+      const errorDiv = document.getElementById("error");
+      const resultsDiv = document.getElementById("results");
+      errorDiv.textContent = "";
+      resultsDiv.innerHTML = "";
 
-    function parseItems(text) {
-      return text.split('\n').map(s => s.trim()).filter(Boolean);
-    }
-    function showError(msg, obj) {
-      const el = qs('#results');
-      el.innerHTML = `<div class="error">שגיאה:\n${msg}${obj ? "\n" + JSON.stringify(obj, null, 2) : ""}</div>`;
-    }
-
-    function renderResults(json) {
-      const el = qs('#results');
-      el.innerHTML = '';
-      if (!json) return;
-
-      if (json.status === 'need_input') {
-        el.innerHTML = `<div class="card">חסר מידע: ${json.needed?.join(', ') || ''}</div>`;
-        return;
-      }
-      if (json.status === 'no_results') {
-        el.innerHTML = `<div class="card">לא נמצאו סניפים או נתונים מתאימים.</div>`;
-        return;
-      }
-      if (json.status !== 'ok') {
-        el.innerHTML = `<div class="error">שגיאה:\n${JSON.stringify(json, null, 2)}</div>`;
+      if (!itemsText || !address || !radius) {
+        errorDiv.textContent = "אנא מלא את כל השדות.";
         return;
       }
 
-      const list = document.createElement('div');
-      json.results.slice(0,3).forEach(r => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.innerHTML = `
-          <div class="grid">
-            <div>
-              <div><b>${r.rank}. ${r.chain}</b> — ${r.branch_name}</div>
-              <div class="muted">${r.distance_km} ק״מ • ${Number(r.total_price).toFixed(2)} ₪</div>
-            </div>
-            <div><span class="link" data-branch="${r.branch_id}">פירוט מחירים</span></div>
-          </div>
-        `;
-        card.querySelector('[data-branch]').addEventListener('click', async () => {
-          try {
-            const resp = await fetch('/api/details', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ branch_id: r.branch_id })
-            });
-            const det = await resp.json();
-            const holder = document.createElement('div');
-            if (!det || !det.items) {
-              holder.innerHTML = `<div class="muted">אין פירוט זמין.</div>`;
-            } else {
-              holder.innerHTML = `
-                <table>
-                  <thead><tr><th>מבוקש</th><th>התאמה</th><th>מחיר</th><th>כמות</th><th>סכום</th></tr></thead>
-                  <tbody>
-                    ${det.items.map(it => `
-                      <tr>
-                        <td>${it.requested}</td>
-                        <td>${it.matched_sku}</td>
-                        <td>${Number(it.unit_price).toFixed(2)} ₪</td>
-                        <td>${it.qty}</td>
-                        <td>${Number(it.line_total).toFixed(2)} ₪</td>
-                      </tr>`).join('')}
-                  </tbody>
-                </table>
-                <div style="margin-top:.5rem"><b>סה״כ:</b> ${Number(det.total_price).toFixed(2)} ₪</div>
-              `;
-            }
-            const old = card.querySelector('.details');
-            if (old) old.remove();
-            const wrap = document.createElement('div');
-            wrap.className = 'details';
-            wrap.appendChild(holder);
-            card.appendChild(wrap);
-          } catch (e) {
-            showError('קריאת פירוט נכשלה', e);
-          }
-        });
-        list.appendChild(card);
-      });
-      el.appendChild(list);
-    }
-
-    qs('#run').addEventListener('click', async () => {
       try {
-        const address = qs('#address').value.trim();
-        const radius_km = Number(qs('#radius').value);
-        const itemsText = qs('#items').value || '';
-        const items = parseItems(itemsText);
-
-        if (!items.length) {
-          showError('שדה הפריטים ריק. הוסף לפחות פריט אחד (שורה לכל פריט).');
-          return;
-        }
-
-        qs('#results').innerHTML = '<div class="card">טוען…</div>';
-
-        const resp = await fetch('/api/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address, radius_km, items })
+        const res = await fetch("http://localhost:8000/find-cheapest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itemsText, address, radius })
         });
 
-        let data;
-        try {
-          data = await resp.json();
-        } catch {
-          showError(`בקשה נכשלה עם סטטוס ${resp.status}`);
+        const data = await res.json();
+        if (data.status !== "ok") {
+          errorDiv.textContent = "שגיאה: " + data.message;
           return;
         }
-        renderResults(data);
-      } catch (e) {
-        showError('שגיאה לא צפויה בצד לקוח', e);
+
+        const result = data.data;
+        let html = `<h2>חנות זולה ביותר: ${result.cheapest_store}</h2>`;
+        html += `<h3>סה״כ מחיר: ${result.total_price} ₪</h3>`;
+        html += `<table><tr><th>פריט</th><th>כמות</th><th>חנות</th><th>מחיר</th></tr>`;
+        result.items.forEach(item => {
+          html += `<tr>
+            <td>${item.name}</td>
+            <td>${item.quantity}</td>
+            <td>${item.store}</td>
+            <td>${item.price} ₪</td>
+          </tr>`;
+        });
+        html += `</table>`;
+
+        resultsDiv.innerHTML = html;
+
+      } catch (err) {
+        errorDiv.textContent = "שגיאה בהתחברות לשרת: " + err.message;
       }
-    });
+    }
   </script>
 </body>
 </html>
