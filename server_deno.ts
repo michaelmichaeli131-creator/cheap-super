@@ -1,4 +1,4 @@
-// server_deno.ts — Deno Deploy: static via serveDir, API via Hono (text.format with top-level schema)
+// server_deno.ts — Deno Deploy: static via serveDir, API via Hono (text.format with required keys)
 import { serveDir } from "jsr:@std/http/file-server";
 import { Hono } from "jsr:@hono/hono";
 import { OpenAI } from "jsr:@openai/openai";
@@ -30,27 +30,33 @@ app.post("/api/search", async (c) => {
   if (!body.address?.trim()) needed.push("address");
   if (!Number.isFinite(Number(body.radius_km))) needed.push("radius_km");
   if (!Array.isArray(body.shopping_list) || body.shopping_list.length === 0) needed.push("shopping_list");
-  if (needed.length) return c.json({ status: "need_input", needed }, 400);
+  if (needed.length) return c.json({ status: "need_input", needed, results: [] }, 400);
 
   try {
     const results = await createSearchResults(body);
+    // ודא שהשדות קיימים גם אם המודל יחטא
+    if (!Array.isArray(results.needed)) results.needed = [];
+    if (!Array.isArray(results.results)) results.results = [];
     return c.json(results);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[/api/search] error:", message);
-    return c.json({ status: "error", message }, 500);
+    return c.json({ status: "error", message, needed: [], results: [] }, 500);
   }
 });
 
 async function createSearchResults(req: SearchRequest) {
   const instructions = `
-אתה מסייע בבניית השוואת מחירים לסל קניות בסופרמרקטים בישראל.
-החזר JSON בלבד לפי הסכמה:
+אתה מסייע בבניית השוואת מחירים בסופרמרקטים בישראל.
+החזר JSON *בלבד* לפי הסכמה הבאה, ותמיד החזר את המפתחות:
 - status: "ok" | "no_results" | "need_input" | "error"
-- needed: string[] (אם need_input)
-- results: [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
-הקפד: line_total = unit_price * quantity; וסכום ה-line_total = total_price. אם אין מספיק מידע — no_results.
-אל תוסיף שדות מעבר לסכמה.
+- needed: array (גם אם ריק)
+- results: array (גם אם ריק)
+במקרה ok: results מכיל חנויות [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
+הקפד על חשבונות: line_total = unit_price * quantity; וסכום כל ה-line_total = total_price.
+ב-no_results: השאר needed=[] ו-results=[].
+ב-need_input: מלא needed במפתחות החסרים, ו-results=[].
+אל תוסיף שדות מעבר לסכמה ולא טקסט חיצוני.
 `.trim();
 
   const payload = {
@@ -62,8 +68,7 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    input: JSON.stringify(payload), // קלט כמחרוזת פשוטה
-    // ---- Structured output via text.format (schema at top-level) ----
+    input: JSON.stringify(payload),
     text: {
       format: {
         type: "json_schema",
@@ -105,7 +110,8 @@ async function createSearchResults(req: SearchRequest) {
               }
             }
           },
-          required: ["status"],
+          // 👇 חובה לכלול את כל המפתחות שמופיעים ב-properties
+          required: ["status","needed","results"],
           additionalProperties: false
         }
       }
@@ -128,6 +134,10 @@ async function createSearchResults(req: SearchRequest) {
     throw new Error("Failed to parse model JSON");
   }
 
+  // הבטחת עקביות ושדות חובה
+  if (!Array.isArray(parsed.needed)) parsed.needed = [];
+  if (!Array.isArray(parsed.results)) parsed.results = [];
+
   if (parsed.status === "ok" && Array.isArray(parsed.results)) {
     for (const r of parsed.results) {
       if (Array.isArray(r.basket)) {
@@ -135,6 +145,7 @@ async function createSearchResults(req: SearchRequest) {
       }
     }
   }
+
   return parsed;
 }
 
