@@ -1,34 +1,31 @@
-// server_deno.ts — Deno Deploy + public/ index.html
-import { Hono } from "@hono/hono";
-import { serveStatic } from "@hono/serve-static";
-import { OpenAI } from "@openai/openai";
+// server_deno.ts — Deno Deploy + Hono + serveStatic (from Hono)
+// Serves static files from ./public (including index.html) and exposes /api/search.
+// Uses OpenAI Responses API with strict JSON schema (no `text.format`).
+
+import { Hono } from "jsr:@hono/hono";
+import { serveStatic } from "jsr:@hono/hono/serve-static";
+import { OpenAI } from "jsr:@openai/openai";
 
 type ShoppingItem = { name: string; quantity: number };
-type SearchRequest = {
-  address?: string;
-  radius_km?: number;
-  shopping_list?: ShoppingItem[];
-};
+type SearchRequest = { address?: string; radius_km?: number; shopping_list?: ShoppingItem[] };
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 if (!OPENAI_API_KEY) {
-  console.warn("[WARN] OPENAI_API_KEY is not set (Deploy: add it in Project → Settings → Environment Variables).");
+  console.warn("[WARN] OPENAI_API_KEY is not set. In Deno Deploy, set it in Project → Settings → Environment Variables.");
 }
 const MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
 
 const client = new OpenAI({ apiKey: OPENAI_API_KEY ?? "" });
 const app = new Hono();
 
-// שירת סטטי מהתיקייה public/ (כל קבצי ה-HTML/CSS/JS)
+// ---- Static: serve everything under ./public (JS/CSS/HTML, including /index.html) ----
 app.use("/*", serveStatic({ root: "./public" }));
-
-// שורש → הפניה ל-/index.html שבתוך public/
 app.get("/", (c) => c.redirect("/index.html"));
 
-// בריאות
+// ---- Health ----
 app.get("/healthz", (c) => c.json({ ok: true }));
 
-// API
+// ---- API ----
 app.post("/api/search", async (c) => {
   let body: SearchRequest;
   try {
@@ -36,11 +33,12 @@ app.post("/api/search", async (c) => {
   } catch {
     return c.json({ status: "error", message: "Invalid JSON body" }, 400);
   }
+
   const needed: string[] = [];
-  if (!body.address || body.address.trim().length === 0) needed.push("address");
+  if (!body.address?.trim()) needed.push("address");
   if (!Number.isFinite(Number(body.radius_km))) needed.push("radius_km");
   if (!Array.isArray(body.shopping_list) || body.shopping_list.length === 0) needed.push("shopping_list");
-  if (needed.length > 0) return c.json({ status: "need_input", needed }, 400);
+  if (needed.length) return c.json({ status: "need_input", needed }, 400);
 
   try {
     const results = await createSearchResults(body);
@@ -58,9 +56,9 @@ async function createSearchResults(req: SearchRequest) {
 קבל כתובת/עיר, רדיוס בק"מ ורשימת מוצרים (שם + כמות).
 החזר JSON בלבד לפי הסכמה:
 - status: "ok" | "no_results" | "need_input" | "error"
-- needed: רשימת שדות חסרים (אם need_input)
+- needed: string[] (אם need_input)
 - results: מערך חנויות [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
-עמוד בחשבונות: line_total = unit_price * quantity; סכום ה-line_total = total_price.
+הקפד: line_total = unit_price * quantity; וסכום כל ה-line_total = total_price.
 אם אין מספיק מידע — החזר no_results בלבד.
 אל תוסיף שדות מעבר לסכמה.
 `.trim();
@@ -74,7 +72,7 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    input: JSON.stringify(payload), // קלט פשוט כמחרוזת
+    input: JSON.stringify(payload), // Send input as a simple string to avoid type mismatches
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -125,36 +123,31 @@ async function createSearchResults(req: SearchRequest) {
     max_output_tokens: 1200
   });
 
+  // Robustly read the JSON string from Responses API
   const textCandidate =
     (response as any).output_text ??
     ((response as any).output?.[0]?.content?.[0]?.type === "output_text"
       ? (response as any).output[0].content[0].text
       : undefined);
-
   if (!textCandidate) throw new Error("LLM returned no text output");
 
   let parsed: any;
-  try {
-    parsed = JSON.parse(textCandidate);
-  } catch {
+  try { parsed = JSON.parse(textCandidate); }
+  catch {
     console.error("Model output (not JSON):", textCandidate);
     throw new Error("Failed to parse model JSON");
   }
 
-  // הבטחת עקביות total_price
+  // Ensure total_price matches basket sum
   if (parsed.status === "ok" && Array.isArray(parsed.results)) {
     for (const r of parsed.results) {
       if (Array.isArray(r.basket)) {
-        const sum = r.basket.reduce(
-          (acc: number, line: any) => acc + Number(line.line_total ?? 0),
-          0
-        );
-        r.total_price = Number(sum);
+        r.total_price = r.basket.reduce((acc: number, l: any) => acc + Number(l.line_total ?? 0), 0);
       }
     }
   }
   return parsed;
 }
 
-// Deno Deploy runtime (אין פורט מקומי)
+// ---- Deno Deploy entry ----
 Deno.serve(app.fetch);

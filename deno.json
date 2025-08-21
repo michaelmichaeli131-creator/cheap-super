@@ -1,10 +1,9 @@
 {
+  "imports": {
+    "@hono/hono": "jsr:@hono/hono@^4.9.2",
+    "@openai/openai": "jsr:@openai/openai@^5.13.1"
+  },
   "tasks": {
     "dev": "deno run -A --watch server_deno.ts"
-  },
-  "imports": {
-    "@hono/hono": "jsr:@hono/hono",
-    "@hono/serve-static": "jsr:@hono/serve-static",
-    "@openai/openai": "jsr:@openai/openai"
   }
 }
