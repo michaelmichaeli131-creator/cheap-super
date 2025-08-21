@@ -7,7 +7,7 @@ import { OpenAI } from "jsr:@openai/openai";
 type SearchRequest = {
   address?: string;
   radius_km?: number;
-  list_text?: string; // ← טקסט חופשי מהקליינט
+  list_text?: string; // טקסט חופשי מהקליינט
 };
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
@@ -38,9 +38,23 @@ app.post("/api/search", async (c) => {
 
   try {
     const results = await llmEverything(body);
-    // עמידות: ודא שהשדות קיימים גם אם המודל יחטא
+
+    // קשיחות מינימלית ליתר ביטחון מול סטיות מודל
     if (!Array.isArray(results.needed)) results.needed = [];
     if (!Array.isArray(results.results)) results.results = [];
+    for (const r of results.results) {
+      if (!Array.isArray(r.basket)) r.basket = [];
+      for (const b of r.basket) {
+        if (typeof b.match_confidence !== "number") b.match_confidence = 0;
+        if (typeof b.substitution !== "boolean") b.substitution = false;
+        if (typeof b.notes !== "string") b.notes = "";
+      }
+      // עקביות סכום
+      if (Array.isArray(r.basket)) {
+        r.total_price = r.basket.reduce((acc: number, l: any) => acc + Number(l.line_total || 0), 0);
+      }
+    }
+
     return c.json(results);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -59,13 +73,9 @@ async function llmEverything(req: SearchRequest) {
 2) בנה 3–4 אפשרויות של חנויות קרובות (בתוך הרדיוס), כולל תחליפים סבירים (אם צריך) והערכות מחיר סבירות.
 3) החזר את התוצאות **ממוינות מהזול ליקר** והוסף לכל תוצאה שדה rank עוקב שמתחיל ב-1.
 4) עקביות חישובית: line_total = unit_price * quantity; וסכום ה-line_total = total_price.
-5) הוסף match_confidence לכל שורת פריט (0..1) ואם זו התאמה לא מדויקת הוסף substitution=true.
-6) אל תוסיף טקסט חופשי מעבר ל-JSON ולא שדות שלא בסכמה.
-
-שדות חובה במבנה הסופי:
-- status: "ok" | "no_results" | "need_input" | "error"
-- needed: array (גם אם ריק)
-- results: array (גם אם ריק). אם ok, החזר 3–4 תוצאות ממוינות מהזול ליקר עם rank 1..N.
+5) החזר match_confidence לכל שורת פריט (0..1), ואם זו התאמה לא מדויקת הוסף substitution=true; הוסף notes:string (יכול להיות ריק).
+6) הוסף match_overall (0..1) לכל חנות.
+7) אל תוסיף טקסט חופשי מעבר ל-JSON ולא שדות שלא בסכמה.
 `.trim();
 
   const payload = {
@@ -78,7 +88,7 @@ async function llmEverything(req: SearchRequest) {
     model: MODEL,
     instructions,
     input: JSON.stringify(payload),
-    // Structured output via text.format
+    // Structured output (strict) — כל המפתחות מוגדרים ב-required
     text: {
       format: {
         type: "json_schema",
@@ -94,7 +104,7 @@ async function llmEverything(req: SearchRequest) {
               items: {
                 type: "object",
                 properties: {
-                  rank: { type: "number" },             // ← המודל מדרג
+                  rank: { type: "number" },
                   store_name: { type: "string" },
                   address: { type: "string" },
                   distance_km: { type: "number" },
@@ -114,22 +124,39 @@ async function llmEverything(req: SearchRequest) {
                         substitution: { type: "boolean" },
                         notes: { type: "string" }
                       },
-                      required: ["name","quantity","unit_price","line_total"],
+                      required: [
+                        "name",
+                        "quantity",
+                        "unit_price",
+                        "line_total",
+                        "match_confidence",
+                        "substitution",
+                        "notes"
+                      ],
                       additionalProperties: false
                     }
                   }
                 },
-                required: ["rank","store_name","address","distance_km","currency","total_price","basket"],
+                required: [
+                  "rank",
+                  "store_name",
+                  "address",
+                  "distance_km",
+                  "currency",
+                  "total_price",
+                  "match_overall",
+                  "basket"
+                ],
                 additionalProperties: false
               }
             }
           },
-          required: ["status","needed","results"],
+          required: ["status", "needed", "results"],
           additionalProperties: false
         }
       }
     },
-    temperature: 0.15,          // יציב ודטרמיניסטי יחסית
+    temperature: 0.15,
     max_output_tokens: 1600
   });
 
@@ -141,18 +168,6 @@ async function llmEverything(req: SearchRequest) {
   if (!text) throw new Error("LLM returned no text");
 
   const data = JSON.parse(text);
-
-  // קשיחות מינימלית (בלי מיון): ודא סכום חישובי ושדות חובה קיימים
-  if (!Array.isArray(data.needed)) data.needed = [];
-  if (!Array.isArray(data.results)) data.results = [];
-
-  for (const r of data.results) {
-    if (Array.isArray(r.basket)) {
-      const sum = r.basket.reduce((acc: number, l: any) => acc + Number(l.line_total || 0), 0);
-      r.total_price = Number(sum);
-    }
-  }
-
   return data;
 }
 
