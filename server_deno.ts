@@ -1,6 +1,6 @@
-// server_deno.ts — Deno Deploy + Hono + serveStatic (order fixed + 404 fallback)
+// server_deno.ts — Deno Deploy: static via serveDir, API via Hono
+import { serveDir } from "jsr:@std/http/file-server";
 import { Hono } from "jsr:@hono/hono";
-import { serveStatic } from "jsr:@hono/hono/serve-static";
 import { OpenAI } from "jsr:@openai/openai";
 
 type ShoppingItem = { name: string; quantity: number };
@@ -15,16 +15,9 @@ const MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
 const client = new OpenAI({ apiKey: OPENAI_API_KEY ?? "" });
 const app = new Hono();
 
-// 1) שורש → index.html (לפני הסטטי!)
-app.get("/", (c) => c.redirect("/index.html"));
-
-// 2) סטטי מתוך ./public
-app.use("/*", serveStatic({ root: "./public" }));
-
-// 3) Health
+// ---------- API ----------
 app.get("/healthz", (c) => c.json({ ok: true }));
 
-// 4) API
 app.post("/api/search", async (c) => {
   let body: SearchRequest;
   try {
@@ -52,13 +45,11 @@ app.post("/api/search", async (c) => {
 async function createSearchResults(req: SearchRequest) {
   const instructions = `
 אתה מסייע בבניית השוואת מחירים לסל קניות בסופרמרקטים בישראל.
-קבל כתובת/עיר, רדיוס בק"מ ורשימת מוצרים (שם + כמות).
 החזר JSON בלבד לפי הסכמה:
 - status: "ok" | "no_results" | "need_input" | "error"
 - needed: string[] (אם need_input)
-- results: מערך חנויות [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
-הקפד: line_total = unit_price * quantity; וסכום כל ה-line_total = total_price.
-אם אין מספיק מידע — החזר no_results בלבד.
+- results: [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
+הקפד: line_total = unit_price * quantity; וסכום ה-line_total = total_price. אם אין מספיק מידע — no_results.
 אל תוסיף שדות מעבר לסכמה.
 `.trim();
 
@@ -71,7 +62,7 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    input: JSON.stringify(payload),
+    input: JSON.stringify(payload), // מחרוזת פשוטה
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -146,8 +137,15 @@ async function createSearchResults(req: SearchRequest) {
   return parsed;
 }
 
-// 5) Fallback ל־404: החזר JSON ידידותי
-app.notFound((c) => c.json({ status: "error", message: "Not found" }, 404));
+// ---------- HTTP entry (static + API) ----------
+Deno.serve((req) => {
+  const url = new URL(req.url);
 
-// Deploy entry
-Deno.serve(app.fetch);
+  // API goes to Hono app
+  if (url.pathname.startsWith("/api/") || url.pathname === "/healthz") {
+    return app.fetch(req);
+  }
+
+  // Everything else: serve ./public with index.html as default
+  return serveDir(req, { fsRoot: "public", urlRoot: "", index: "index.html" });
+});
