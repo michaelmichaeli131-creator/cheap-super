@@ -1,7 +1,4 @@
-// server_deno.ts — Deno Deploy + Hono + serveStatic (from Hono)
-// Serves static files from ./public (including index.html) and exposes /api/search.
-// Uses OpenAI Responses API with strict JSON schema (no `text.format`).
-
+// server_deno.ts — Deno Deploy + Hono + serveStatic (order fixed + 404 fallback)
 import { Hono } from "jsr:@hono/hono";
 import { serveStatic } from "jsr:@hono/hono/serve-static";
 import { OpenAI } from "jsr:@openai/openai";
@@ -11,21 +8,23 @@ type SearchRequest = { address?: string; radius_km?: number; shopping_list?: Sho
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 if (!OPENAI_API_KEY) {
-  console.warn("[WARN] OPENAI_API_KEY is not set. In Deno Deploy, set it in Project → Settings → Environment Variables.");
+  console.warn("[WARN] OPENAI_API_KEY is not set. Set it in Deno Deploy → Project → Settings → Environment Variables.");
 }
 const MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
 
 const client = new OpenAI({ apiKey: OPENAI_API_KEY ?? "" });
 const app = new Hono();
 
-// ---- Static: serve everything under ./public (JS/CSS/HTML, including /index.html) ----
-app.use("/*", serveStatic({ root: "./public" }));
+// 1) שורש → index.html (לפני הסטטי!)
 app.get("/", (c) => c.redirect("/index.html"));
 
-// ---- Health ----
+// 2) סטטי מתוך ./public
+app.use("/*", serveStatic({ root: "./public" }));
+
+// 3) Health
 app.get("/healthz", (c) => c.json({ ok: true }));
 
-// ---- API ----
+// 4) API
 app.post("/api/search", async (c) => {
   let body: SearchRequest;
   try {
@@ -72,7 +71,7 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    input: JSON.stringify(payload), // Send input as a simple string to avoid type mismatches
+    input: JSON.stringify(payload),
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -123,7 +122,6 @@ async function createSearchResults(req: SearchRequest) {
     max_output_tokens: 1200
   });
 
-  // Robustly read the JSON string from Responses API
   const textCandidate =
     (response as any).output_text ??
     ((response as any).output?.[0]?.content?.[0]?.type === "output_text"
@@ -138,7 +136,6 @@ async function createSearchResults(req: SearchRequest) {
     throw new Error("Failed to parse model JSON");
   }
 
-  // Ensure total_price matches basket sum
   if (parsed.status === "ok" && Array.isArray(parsed.results)) {
     for (const r of parsed.results) {
       if (Array.isArray(r.basket)) {
@@ -149,5 +146,8 @@ async function createSearchResults(req: SearchRequest) {
   return parsed;
 }
 
-// ---- Deno Deploy entry ----
+// 5) Fallback ל־404: החזר JSON ידידותי
+app.notFound((c) => c.json({ status: "error", message: "Not found" }, 404));
+
+// Deploy entry
 Deno.serve(app.fetch);
