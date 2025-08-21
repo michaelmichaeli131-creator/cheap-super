@@ -1,40 +1,56 @@
 <!DOCTYPE html>
-<html lang="he">
+<html lang="he" dir="rtl">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>השוואת מחירי סל קניות</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- Bootstrap -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
   <style>
-    body { background: #f8f9fa; direction: rtl; }
-    .container { max-width: 800px; margin-top: 40px; }
-    textarea { font-size: 0.9rem; }
-    .spinner-border { display: none; }
+    body { background: #f8f9fa; }
+    .container { max-width: 900px; margin-top: 40px; }
+    textarea { font-size: 0.95rem; }
+    .spinner-border { display: none; vertical-align: middle; }
+    .badge-sub { background: #ffe08a; color: #3b3b00; }
+    .muted { color: #6c757d; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1 class="mb-4">השוואת סל קניות בסופרמרקטים</h1>
+    <h1 class="mb-3">השוואת סל קניות בסופרמרקטים</h1>
+    <p class="text-muted">
+      כתבו את רשימת הקניות <strong>בטקסט חופשי</strong> (לא חייב פסיקים/שורות). לדוגמה:
+      <span class="mono">שישיית מים 1.5 ליטר, 10 פיתות, חלב 3 אחוז 2, קוקה קולה בקבוקים 2</span>
+    </p>
 
     <form id="searchForm" class="card p-3 shadow-sm">
-      <div class="mb-3">
-        <label class="form-label">כתובת / עיר</label>
-        <input type="text" class="form-control" id="address" required placeholder="לדוגמה: חולון">
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label">כתובת / עיר</label>
+          <input type="text" class="form-control" id="address" required placeholder="למשל: חולון" />
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">רדיוס (בק״מ)</label>
+          <input type="number" class="form-control" id="radius" required min="1" step="0.5" value="5" />
+        </div>
+        <div class="col-12">
+          <label class="form-label">רשימת קניות (טקסט חופשי)</label>
+          <textarea id="shoppingList" class="form-control" rows="4" required
+            placeholder="לדוגמה: שישיית מים 1.5 ליטר, 10 פיתות, 2 חלב 3%, קוקה קולה 2 בקבוקים, ספגטי"></textarea>
+          <div class="form-text">
+            אין חובה להפריד בפסיקים — המערכת תנסה להבין מוצרים וכמויות גם ממשפט חופשי.
+          </div>
+        </div>
       </div>
-      <div class="mb-3">
-        <label class="form-label">רדיוס (בק״מ)</label>
-        <input type="number" class="form-control" id="radius" required value="5">
-      </div>
-      <div class="mb-3">
-        <label class="form-label">רשימת קניות</label>
-        <textarea id="shoppingList" class="form-control" rows="4" required
-          placeholder="שישית בירות הייניקן, 10 פיתות, 2 קוקה קולות, שישית מים, 3 ספגטי"></textarea>
-        <div class="form-text">הכנס מוצרים מופרדים בפסיקים. אפשר עם כמות (לדוגמה: '10 פיתות').</div>
-      </div>
-      <button type="submit" class="btn btn-primary">מצא לי את הזול ביותר</button>
-      <div class="spinner-border text-primary ms-3" role="status" id="loading">
-        <span class="visually-hidden">טוען...</span>
+
+      <div class="mt-3 d-flex align-items-center">
+        <button type="submit" class="btn btn-primary">
+          מצא לי את הזול ביותר
+        </button>
+        <div class="spinner-border text-primary ms-3" role="status" id="loading">
+          <span class="visually-hidden">טוען...</span>
+        </div>
       </div>
     </form>
 
@@ -46,6 +62,12 @@
     const resultsDiv = document.getElementById("results");
     const spinner = document.getElementById("loading");
 
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"'`=\/]/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"
+      }[c]));
+    }
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       resultsDiv.innerHTML = "";
@@ -53,66 +75,111 @@
 
       const address = document.getElementById("address").value.trim();
       const radius = parseFloat(document.getElementById("radius").value);
-      const listRaw = document.getElementById("shoppingList").value;
-
-      const shopping_list = listRaw.split(",").map(item => {
-        const parts = item.trim().split(" ");
-        // נסה לתפוס מספר בתחילת הטקסט
-        let qty = 1;
-        if (!isNaN(parts[0])) {
-          qty = parseInt(parts[0]);
-          parts.shift();
-        }
-        return { name: parts.join(" "), quantity: qty };
-      }).filter(it => it.name);
+      const listText = document.getElementById("shoppingList").value.trim();
 
       try {
         const resp = await fetch("/api/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address, radius_km: radius, shopping_list })
+          body: JSON.stringify({
+            address,
+            radius_km: radius,
+            list_text: listText // 👈 שולחים טקסט חופשי. ה-LLM עושה הכל.
+          })
         });
 
         const data = await resp.json();
         spinner.style.display = "none";
 
+        if (!resp.ok) {
+          resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאת שרת (${resp.status}): ${esc(data.message || "לא ידוע")}</div>`;
+          return;
+        }
+
         if (data.status === "ok") {
+          if (!Array.isArray(data.results) || data.results.length === 0) {
+            resultsDiv.innerHTML = `<div class="alert alert-info">לא נמצאו תוצאות.</div>`;
+            return;
+          }
+
+          // מציגים את התוצאות בדיוק לפי הסדר שה-LLM החזיר (אמור להיות מהזול ליקר)
           let html = "";
           data.results.forEach(r => {
+            const currency = esc(r.currency || "₪");
+            const mo = (r.match_overall != null && !Number.isNaN(r.match_overall))
+              ? `${Math.round(Number(r.match_overall) * 100)}%`
+              : "—";
+
+            const basketRows = Array.isArray(r.basket) ? r.basket.map(b => {
+              const subBadge = b.substitution ? ' <span class="badge badge-sub rounded-pill">תחליף</span>' : '';
+              const conf = (b.match_confidence != null && !Number.isNaN(b.match_confidence))
+                ? `${Math.round(Number(b.match_confidence) * 100)}%` : "—";
+              const unit = Number(b.unit_price || 0);
+              const line = Number(b.line_total || 0);
+              return `
+                <tr>
+                  <td>${esc(b.name)}${subBadge}</td>
+                  <td>${esc(b.quantity)}</td>
+                  <td>${unit.toFixed(2)}</td>
+                  <td>${line.toFixed(2)}</td>
+                  <td>${conf}</td>
+                </tr>`;
+            }).join("") : "";
+
             html += `
               <div class="card mb-3 shadow-sm">
                 <div class="card-body">
-                  <h5 class="card-title">#${r.rank} - ${r.store_name}</h5>
-                  <h6 class="card-subtitle mb-2 text-muted">${r.address} | מרחק: ${r.distance_km} ק״מ</h6>
-                  <p><strong>סה״כ: ${r.total_price.toFixed(2)} ${r.currency}</strong></p>
-                  <table class="table table-sm">
-                    <thead><tr><th>מוצר</th><th>כמות</th><th>מחיר יחידה</th><th>סך הכל</th></tr></thead>
-                    <tbody>
-                      ${r.basket.map(b => `
-                        <tr>
-                          <td>${b.name}</td>
-                          <td>${b.quantity}</td>
-                          <td>${b.unit_price.toFixed(2)}</td>
-                          <td>${b.line_total.toFixed(2)}</td>
-                        </tr>`).join("")}
-                    </tbody>
-                  </table>
+                  <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                      <h5 class="card-title mb-1">#${esc(r.rank)} — ${esc(r.store_name)}</h5>
+                      <div class="text-muted small">
+                        ${esc(r.address)} | מרחק: ${esc(r.distance_km)} ק״מ | דיוק כללי: ${mo}
+                      </div>
+                    </div>
+                    <div class="text-end">
+                      <div class="h5 mb-0">סה״כ: ${Number(r.total_price || 0).toFixed(2)} ${currency}</div>
+                      <div class="small text-muted">(מהזול ליקר — לפי ה-LLM)</div>
+                    </div>
+                  </div>
+
+                  <div class="table-responsive mt-3">
+                    <table class="table table-sm align-middle">
+                      <thead>
+                        <tr class="table-light">
+                          <th>מוצר</th>
+                          <th>כמות</th>
+                          <th>מחיר יחידה</th>
+                          <th>סך הכל</th>
+                          <th>דיוק</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${basketRows}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>`;
           });
+
           resultsDiv.innerHTML = html;
+
         } else if (data.status === "need_input") {
-          resultsDiv.innerHTML = `<div class="alert alert-warning">חסרים שדות: ${data.needed.join(", ")}</div>`;
+          const missing = Array.isArray(data.needed) ? data.needed.join(", ") : "";
+          resultsDiv.innerHTML = `<div class="alert alert-warning">חסרים שדות: ${esc(missing)}</div>`;
         } else if (data.status === "no_results") {
           resultsDiv.innerHTML = `<div class="alert alert-info">לא נמצאו תוצאות.</div>`;
         } else {
-          resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאה: ${data.message || "לא ידוע"}</div>`;
+          resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאה: ${esc(data.message || "לא ידוע")}</div>`;
         }
+
       } catch (err) {
         spinner.style.display = "none";
-        resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאה בקריאה לשרת: ${err.message}</div>`;
+        resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאה בקריאה לשרת: ${esc(err.message)}</div>`;
       }
     });
   </script>
+  <!-- Bootstrap JS (אופציונלי לרכיבים מסוימים) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -1,10 +1,14 @@
-// server_deno.ts — Deno Deploy: static via serveDir, API via Hono (text.format with required keys)
+// server_deno.ts — Deno Deploy: static via serveDir, API via Hono
+// LLM-does-everything mode: server passes free text; model returns 3–4 stores sorted cheapest→expensive.
 import { serveDir } from "jsr:@std/http/file-server";
 import { Hono } from "jsr:@hono/hono";
 import { OpenAI } from "jsr:@openai/openai";
 
-type ShoppingItem = { name: string; quantity: number };
-type SearchRequest = { address?: string; radius_km?: number; shopping_list?: ShoppingItem[] };
+type SearchRequest = {
+  address?: string;
+  radius_km?: number;
+  list_text?: string; // ← טקסט חופשי מהקליינט
+};
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 if (!OPENAI_API_KEY) {
@@ -23,18 +27,18 @@ app.post("/api/search", async (c) => {
   try {
     body = await c.req.json<SearchRequest>();
   } catch {
-    return c.json({ status: "error", message: "Invalid JSON body" }, 400);
+    return c.json({ status: "error", message: "Invalid JSON body", needed: [], results: [] }, 400);
   }
 
   const needed: string[] = [];
   if (!body.address?.trim()) needed.push("address");
   if (!Number.isFinite(Number(body.radius_km))) needed.push("radius_km");
-  if (!Array.isArray(body.shopping_list) || body.shopping_list.length === 0) needed.push("shopping_list");
+  if (!body.list_text?.trim()) needed.push("list_text");
   if (needed.length) return c.json({ status: "need_input", needed, results: [] }, 400);
 
   try {
-    const results = await createSearchResults(body);
-    // ודא שהשדות קיימים גם אם המודל יחטא
+    const results = await llmEverything(body);
+    // עמידות: ודא שהשדות קיימים גם אם המודל יחטא
     if (!Array.isArray(results.needed)) results.needed = [];
     if (!Array.isArray(results.results)) results.results = [];
     return c.json(results);
@@ -45,30 +49,36 @@ app.post("/api/search", async (c) => {
   }
 });
 
-async function createSearchResults(req: SearchRequest) {
+// ---------- Single LLM call that does EVERYTHING ----------
+async function llmEverything(req: SearchRequest) {
   const instructions = `
-אתה מסייע בבניית השוואת מחירים בסופרמרקטים בישראל.
-החזר JSON *בלבד* לפי הסכמה הבאה, ותמיד החזר את המפתחות:
+אתה מבצע השוואת סל קניות מקצה לקצה על בסיס טקסט חופשי בעברית.
+קלט: כתובת/עיר, רדיוס בק"מ, וטקסט חופשי עם רשימת קניות (ללא תלות בפסיקים).
+משימות:
+1) הבן את רשימת הפריטים והכמויות מהטקסט החופשי (נרמול שמות, איחוד יחידות, התמודדות עם שגיאות כתיב).
+2) בנה 3–4 אפשרויות של חנויות קרובות (בתוך הרדיוס), כולל תחליפים סבירים (אם צריך) והערכות מחיר סבירות.
+3) החזר את התוצאות **ממוינות מהזול ליקר** והוסף לכל תוצאה שדה rank עוקב שמתחיל ב-1.
+4) עקביות חישובית: line_total = unit_price * quantity; וסכום ה-line_total = total_price.
+5) הוסף match_confidence לכל שורת פריט (0..1) ואם זו התאמה לא מדויקת הוסף substitution=true.
+6) אל תוסיף טקסט חופשי מעבר ל-JSON ולא שדות שלא בסכמה.
+
+שדות חובה במבנה הסופי:
 - status: "ok" | "no_results" | "need_input" | "error"
 - needed: array (גם אם ריק)
-- results: array (גם אם ריק)
-במקרה ok: results מכיל חנויות [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
-הקפד על חשבונות: line_total = unit_price * quantity; וסכום כל ה-line_total = total_price.
-ב-no_results: השאר needed=[] ו-results=[].
-ב-need_input: מלא needed במפתחות החסרים, ו-results=[].
-אל תוסיף שדות מעבר לסכמה ולא טקסט חיצוני.
+- results: array (גם אם ריק). אם ok, החזר 3–4 תוצאות ממוינות מהזול ליקר עם rank 1..N.
 `.trim();
 
   const payload = {
     address: req.address,
-    radius_km: req.radius_km,
-    shopping_list: req.shopping_list,
+    radius_km: Number(req.radius_km),
+    list_text: req.list_text,
   };
 
   const response = await client.responses.create({
     model: MODEL,
     instructions,
     input: JSON.stringify(payload),
+    // Structured output via text.format
     text: {
       format: {
         type: "json_schema",
@@ -84,12 +94,13 @@ async function createSearchResults(req: SearchRequest) {
               items: {
                 type: "object",
                 properties: {
-                  rank: { type: "number" },
+                  rank: { type: "number" },             // ← המודל מדרג
                   store_name: { type: "string" },
                   address: { type: "string" },
                   distance_km: { type: "number" },
                   currency: { type: "string" },
                   total_price: { type: "number" },
+                  match_overall: { type: "number" },
                   basket: {
                     type: "array",
                     items: {
@@ -98,9 +109,12 @@ async function createSearchResults(req: SearchRequest) {
                         name: { type: "string" },
                         quantity: { type: "number" },
                         unit_price: { type: "number" },
-                        line_total: { type: "number" }
+                        line_total: { type: "number" },
+                        match_confidence: { type: "number" },
+                        substitution: { type: "boolean" },
+                        notes: { type: "string" }
                       },
-                      required: ["name", "quantity", "unit_price", "line_total"],
+                      required: ["name","quantity","unit_price","line_total"],
                       additionalProperties: false
                     }
                   }
@@ -110,43 +124,36 @@ async function createSearchResults(req: SearchRequest) {
               }
             }
           },
-          // 👇 חובה לכלול את כל המפתחות שמופיעים ב-properties
           required: ["status","needed","results"],
           additionalProperties: false
         }
       }
     },
-    temperature: 0.2,
-    max_output_tokens: 1200
+    temperature: 0.15,          // יציב ודטרמיניסטי יחסית
+    max_output_tokens: 1600
   });
 
-  const textCandidate =
+  const text =
     (response as any).output_text ??
     ((response as any).output?.[0]?.content?.[0]?.type === "output_text"
       ? (response as any).output[0].content[0].text
       : undefined);
-  if (!textCandidate) throw new Error("LLM returned no text output");
+  if (!text) throw new Error("LLM returned no text");
 
-  let parsed: any;
-  try { parsed = JSON.parse(textCandidate); }
-  catch {
-    console.error("Model output (not JSON):", textCandidate);
-    throw new Error("Failed to parse model JSON");
-  }
+  const data = JSON.parse(text);
 
-  // הבטחת עקביות ושדות חובה
-  if (!Array.isArray(parsed.needed)) parsed.needed = [];
-  if (!Array.isArray(parsed.results)) parsed.results = [];
+  // קשיחות מינימלית (בלי מיון): ודא סכום חישובי ושדות חובה קיימים
+  if (!Array.isArray(data.needed)) data.needed = [];
+  if (!Array.isArray(data.results)) data.results = [];
 
-  if (parsed.status === "ok" && Array.isArray(parsed.results)) {
-    for (const r of parsed.results) {
-      if (Array.isArray(r.basket)) {
-        r.total_price = r.basket.reduce((acc: number, l: any) => acc + Number(l.line_total ?? 0), 0);
-      }
+  for (const r of data.results) {
+    if (Array.isArray(r.basket)) {
+      const sum = r.basket.reduce((acc: number, l: any) => acc + Number(l.line_total || 0), 0);
+      r.total_price = Number(sum);
     }
   }
 
-  return parsed;
+  return data;
 }
 
 // ---------- HTTP entry (static + API) ----------
