@@ -1,4 +1,4 @@
-// server_deno.ts — Deno Deploy: static via serveDir, API via Hono
+// server_deno.ts — Deno Deploy: static via serveDir, API via Hono (text.format)
 import { serveDir } from "jsr:@std/http/file-server";
 import { Hono } from "jsr:@hono/hono";
 import { OpenAI } from "jsr:@openai/openai";
@@ -62,50 +62,53 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    input: JSON.stringify(payload), // מחרוזת פשוטה
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "SearchResults",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            status: { enum: ["ok", "no_results", "need_input", "error"] },
-            needed: { type: "array", items: { type: "string" } },
-            results: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  rank: { type: "number" },
-                  store_name: { type: "string" },
-                  address: { type: "string" },
-                  distance_km: { type: "number" },
-                  currency: { type: "string" },
-                  total_price: { type: "number" },
-                  basket: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        name: { type: "string" },
-                        quantity: { type: "number" },
-                        unit_price: { type: "number" },
-                        line_total: { type: "number" }
-                      },
-                      required: ["name", "quantity", "unit_price", "line_total"],
-                      additionalProperties: false
+    input: JSON.stringify(payload), // קלט פשוט כמחרוזת
+    // *** Structured output moved to text.format ***
+    text: {
+      format: {
+        type: "json_schema",
+        json_schema: {
+          name: "SearchResults",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              status: { enum: ["ok", "no_results", "need_input", "error"] },
+              needed: { type: "array", items: { type: "string" } },
+              results: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    rank: { type: "number" },
+                    store_name: { type: "string" },
+                    address: { type: "string" },
+                    distance_km: { type: "number" },
+                    currency: { type: "string" },
+                    total_price: { type: "number" },
+                    basket: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          name: { type: "string" },
+                          quantity: { type: "number" },
+                          unit_price: { type: "number" },
+                          line_total: { type: "number" }
+                        },
+                        required: ["name", "quantity", "unit_price", "line_total"],
+                        additionalProperties: false
+                      }
                     }
-                  }
-                },
-                required: ["rank","store_name","address","distance_km","currency","total_price","basket"],
-                additionalProperties: false
+                  },
+                  required: ["rank","store_name","address","distance_km","currency","total_price","basket"],
+                  additionalProperties: false
+                }
               }
-            }
-          },
-          required: ["status"],
-          additionalProperties: false
+            },
+            required: ["status"],
+            additionalProperties: false
+          }
         }
       }
     },
