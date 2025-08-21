@@ -1,9 +1,6 @@
-// server_deno.ts — Deno Deploy friendly
-// App: השוואת סל קניות בסופרמרקטים
-// Framework: Hono
-// OpenAI Responses API with strict JSON schema
-
+// server_deno.ts — Deno Deploy + public/ index.html
 import { Hono } from "@hono/hono";
+import { serveStatic } from "@hono/serve-static";
 import { OpenAI } from "@openai/openai";
 
 type ShoppingItem = { name: string; quantity: number };
@@ -22,22 +19,16 @@ const MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
 const client = new OpenAI({ apiKey: OPENAI_API_KEY ?? "" });
 const app = new Hono();
 
-// ---- Serve the UI (Super index.html) ----
-// In Deno Deploy, read bundled file via URL relative to this module.
-app.get("/", async (c) => {
-  try {
-    const htmlUrl = new URL("./Super index.html", import.meta.url);
-    const html = await Deno.readTextFile(htmlUrl);
-    return c.html(html);
-  } catch (_e) {
-    return c.text("Super index.html not found in bundle.", 500);
-  }
-});
+// שירת סטטי מהתיקייה public/ (כל קבצי ה-HTML/CSS/JS)
+app.use("/*", serveStatic({ root: "./public" }));
 
-// Healthcheck
+// שורש → הפניה ל-/index.html שבתוך public/
+app.get("/", (c) => c.redirect("/index.html"));
+
+// בריאות
 app.get("/healthz", (c) => c.json({ ok: true }));
 
-// ---- API: /api/search ----
+// API
 app.post("/api/search", async (c) => {
   let body: SearchRequest;
   try {
@@ -45,43 +36,31 @@ app.post("/api/search", async (c) => {
   } catch {
     return c.json({ status: "error", message: "Invalid JSON body" }, 400);
   }
-
   const needed: string[] = [];
   if (!body.address || body.address.trim().length === 0) needed.push("address");
   if (!Number.isFinite(Number(body.radius_km))) needed.push("radius_km");
   if (!Array.isArray(body.shopping_list) || body.shopping_list.length === 0) needed.push("shopping_list");
-
-  if (needed.length > 0) {
-    return c.json({ status: "need_input", needed }, 400);
-  }
+  if (needed.length > 0) return c.json({ status: "need_input", needed }, 400);
 
   try {
     const results = await createSearchResults(body);
     return c.json(results);
   } catch (err) {
-    console.error("[/api/search] error:", err);
     const message = err instanceof Error ? err.message : String(err);
+    console.error("[/api/search] error:", message);
     return c.json({ status: "error", message }, 500);
   }
 });
 
-// ---- OpenAI call ----
 async function createSearchResults(req: SearchRequest) {
   const instructions = `
 אתה מסייע בבניית השוואת מחירים לסל קניות בסופרמרקטים בישראל.
 קבל כתובת/עיר, רדיוס בק"מ ורשימת מוצרים (שם + כמות).
-החזר JSON בלבד לפי הסכמה שניתנת עם שדות:
+החזר JSON בלבד לפי הסכמה:
 - status: "ok" | "no_results" | "need_input" | "error"
 - needed: רשימת שדות חסרים (אם need_input)
-- results: מערך של חנויות כאשר לכל חנות:
-  rank (מספר),
-  store_name (string),
-  address (string),
-  distance_km (מספר),
-  currency (string, לדוגמה "₪"),
-  total_price (מספר),
-  basket: מערך של { name, quantity, unit_price, line_total }.
-כל המחירים חייבים להיות עקביים: line_total = unit_price * quantity; וסכום ה-line_total שווה total_price.
+- results: מערך חנויות [{ rank, store_name, address, distance_km, currency, total_price, basket:[{name,quantity,unit_price,line_total}] }]
+עמוד בחשבונות: line_total = unit_price * quantity; סכום ה-line_total = total_price.
 אם אין מספיק מידע — החזר no_results בלבד.
 אל תוסיף שדות מעבר לסכמה.
 `.trim();
@@ -95,9 +74,7 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    // שימוש בקלט כמחרוזת כדי להימנע מקונפליקטי טיפוסים
-    input: JSON.stringify(payload),
-    // ---- העיקר: response_format (אין text.format בכלל) ----
+    input: JSON.stringify(payload), // קלט פשוט כמחרוזת
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -154,9 +131,7 @@ async function createSearchResults(req: SearchRequest) {
       ? (response as any).output[0].content[0].text
       : undefined);
 
-  if (!textCandidate) {
-    throw new Error("LLM returned no text output");
-  }
+  if (!textCandidate) throw new Error("LLM returned no text output");
 
   let parsed: any;
   try {
@@ -178,10 +153,8 @@ async function createSearchResults(req: SearchRequest) {
       }
     }
   }
-
   return parsed;
 }
 
-// ---- Start on Deno Deploy ----
-// אין פורט; Deploy מספק את ה-HTTP runtime.
+// Deno Deploy runtime (אין פורט מקומי)
 Deno.serve(app.fetch);
