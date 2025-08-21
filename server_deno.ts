@@ -1,180 +1,218 @@
-/// <reference no-default-lib="true"/>
-import { Hono } from "@hono/hono";
-// סטטי דרך אדפטור Deno (מונע getContent error)
-import { serveStatic } from "@hono/hono/deno";
-import OpenAI from "@openai/openai";
+// server_deno.ts
+// Deno + Hono server for "השוואת סל קניות בסופרמרקטים"
+// Uses OpenAI Responses API with strict JSON schema output.
 
-/** ===== Bindings (Env) ===== */
-type Bindings = {
-  OPENAI_API_KEY: string;
-  OPENAI_MODEL?: string;
+import { Hono } from "@hono/hono";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { serveStatic } from "@hono/serve-static";
+import { OpenAI } from "@openai/openai";
+
+type ShoppingItem = { name: string; quantity: number };
+type SearchRequest = {
+  address?: string;
+  radius_km?: number;
+  shopping_list?: ShoppingItem[];
 };
 
-/** ===== App ===== */
-const app = new Hono<{ Bindings: Bindings }>();
-
-/** ===== Static (UI) ===== */
-app.use("/", serveStatic({ root: "./public" }));
-
-/** ===== Helpers (ENV, client) ===== */
-function getOpenAIClient(apiKey: string) {
-  return new OpenAI({ apiKey });
+// ---- Environment ----
+const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+if (!OPENAI_API_KEY) {
+  console.warn("[WARN] OPENAI_API_KEY is not set. Set it before running the server.");
 }
 
-function readEnv(c: any) {
-  const key =
-    (c?.env?.OPENAI_API_KEY as string | undefined) ?? Deno.env.get("OPENAI_API_KEY");
-  const model =
-    (c?.env?.OPENAI_MODEL as string | undefined) ?? Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
-  return { key, model };
-}
+const MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
 
-/** ===== System Prompt =====
- * ה-LLM לא ממציא מחירים/מרחקים; אם אין נתונים אמיתיים — מחזיר no_results.
- * תמיד JSON תקין בלבד.
- */
-const SYSTEM_PROMPT = `
-You are a strict JSON API that ranks the three cheapest supermarket branches for a given shopping basket in Israel.
+// ---- OpenAI client ----
+const client = new OpenAI({ apiKey: OPENAI_API_KEY ?? "" });
 
-Rules:
-- Do NOT fabricate prices, distances or store data. If you cannot access real, verifiable data, return {"status":"no_results"}.
-- If required inputs are missing, return {"status":"need_input","needed":[...]} with any of: "address","items","radius_km".
-- Currency is ILS; distances are kilometers (one decimal if needed).
-- Output MUST be valid JSON only (no prose).
-- Sort results from cheapest to most expensive; break ties by distance (closer first).
-`.trim();
+// ---- Hono app ----
+const app = new Hono();
 
-/** ===== בונה פרומפט-משתמש ===== */
-function buildUserPrompt(
-  address: string,
-  radius_km: number | string,
-  shopping_list: Array<{ name: string; quantity?: number }>
-) {
-  const listBlock = (shopping_list ?? [])
-    .map((it) => {
-      const n = String(it?.name ?? "").trim();
-      const q = Number(it?.quantity ?? 1);
-      return n ? `- ${n}; qty=${isFinite(q) && q > 0 ? q : 1}` : "";
-    })
-    .filter(Boolean)
-    .join("\n");
+// Static root (so /, /Super%20index.html, /assets, etc. are served if present)
+app.use("/*", serveStatic({ root: "./" }));
 
-  // מגדירים מפורשות את מבנה ה-JSON בפלט
-  const schemaHint = `
-Return ONLY strict JSON in this shape:
-
-{
-  "status": "ok" | "no_results" | "need_input" | "error",
-  "needed": string[] | undefined,
-  "results": [
-    {
-      "rank": number,
-      "store_name": string,
-      "address": string,
-      "distance_km": number,
-      "total_price": number,
-      "currency": "ILS",
-      "basket": [
-        { "name": string, "quantity": number, "unit_price": number, "line_total": number }
-      ]
-    }
-  ]
-}
-`.trim();
-
-  return `
-Find the three cheapest supermarket branches (TOP-3) for this basket within the given radius and output ONLY JSON per the shape below.
-
-Input:
-- Address/City: ${address || "<missing>"}
-- Radius (km): ${String(radius_km || "<missing>")}
-- Shopping list (one per line; each may include "; qty="):
-${listBlock || "<empty>"}
-
-If any required input is missing, return:
-{"status":"need_input","needed":[...]}  // any of: "address","items","radius_km"
-
-If you cannot access real, verifiable pricing/branch data, return:
-{"status":"no_results"}
-
-Otherwise return:
-${schemaHint}
-`.trim();
-}
-
-/** ===== קריאה ל-LLM (Responses API עם text.format=json) ===== */
-async function callLLM(userPrompt: string, client: OpenAI, model: string) {
+// Root route explicitly serves the HTML if present
+app.get("/", async (c) => {
   try {
-    const resp = await client.responses.create({
-      model,
-      instructions: SYSTEM_PROMPT,
-      input: userPrompt,
-      // שימו לב: זה הפורמט החדש! (במקום response_format)
-      text: { format: "json" },
-      // לא מפעילים tools כדי להימנע משגיאות הרשאות/קונטיינר ב-Deno Deploy
-    });
-
-    // נסה לקבל פלט מובנה
-    const anyResp = resp as any;
-    const textOut: string =
-      anyResp.output_text ??
-      (Array.isArray(anyResp.output)
-        ? anyResp.output
-            .map((o: any) =>
-              Array.isArray(o.content) ? o.content.map((c: any) => c.text || "").join("\n") : ""
-            )
-            .join("\n")
-        : "");
-
-    if (!textOut) {
-      // fallback אחרון: החזר את כל המענה גולמי כדי להבין מה קרה
-      return { status: "error", message: "Empty model output", raw: anyResp };
-    }
-
-    try {
-      return JSON.parse(textOut);
-    } catch {
-      // נסה לחלץ בלוק JSON
-      const m = String(textOut).match(/\{[\s\S]*\}/);
-      if (m) {
-        try { return JSON.parse(m[0]); } catch {}
-      }
-      return { status: "error", message: "Model did not return valid JSON", raw: textOut };
-    }
-  } catch (e: any) {
-    console.error("LLM error:", e?.message || e);
-    return { status: "error", message: `LLM request failed: ${String(e?.message || e)}` };
-  }
-}
-
-/** ===== Routes ===== */
-
-// Health
-app.get("/health", (c) => c.text("ok"));
-
-// API: TOP-3 cheapest (כולו דרך LLM; השרת אינו מחשב)
-app.post("/api/search", async (c) => {
-  try {
-    const { key, model } = readEnv(c);
-    if (!key) return c.json({ status: "error", message: "OPENAI_API_KEY missing" }, 500);
-    const client = getOpenAIClient(key);
-
-    // קלט מהלקוח
-    const body = await c.req.json().catch(() => ({}));
-    const address = String(body?.address ?? "").trim();
-    const radius_km = body?.radius_km ?? "";
-    const shopping_list = Array.isArray(body?.shopping_list) ? body.shopping_list : [];
-
-    // בניית פרומפט ושליחה ל-LLM
-    const userPrompt = buildUserPrompt(address, radius_km, shopping_list);
-    const out = await callLLM(userPrompt, client, model);
-
-    return c.json(out);
-  } catch (e: any) {
-    console.error("search route error:", e);
-    return c.json({ status: "error", message: "internal_error" }, 500);
+    const html = await Deno.readTextFile("Super index.html");
+    return c.html(html);
+  } catch (_err) {
+    return c.text(
+      "Super index.html not found. Make sure the file is in the same folder as server_deno.ts",
+      500,
+    );
   }
 });
 
-/** ===== Export (Deno Deploy) ===== */
-export default { fetch: app.fetch };
+// Healthcheck
+app.get("/healthz", (c) => c.json({ ok: true }));
+
+// ---- API: /api/search ----
+app.post("/api/search", async (c) => {
+  let body: SearchRequest;
+  try {
+    body = await c.req.json<SearchRequest>();
+  } catch {
+    return c.json({ status: "error", message: "Invalid JSON body" }, 400);
+  }
+
+  const needed: string[] = [];
+  if (!body.address || body.address.trim().length === 0) needed.push("address");
+  if (typeof body.radius_km !== "number" || !isFinite(body.radius_km!)) needed.push("radius_km");
+  if (!Array.isArray(body.shopping_list) || body.shopping_list.length === 0) needed.push("shopping_list");
+
+  if (needed.length > 0) {
+    return c.json({ status: "need_input", needed }, 400);
+  }
+
+  try {
+    const results = await createSearchResults(body);
+    return c.json(results);
+  } catch (err) {
+    console.error("[/api/search] error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ status: "error", message }, 500);
+  }
+});
+
+// ---- OpenAI call ----
+async function createSearchResults(req: SearchRequest) {
+  // Prompt/instructions to the model
+  const instructions = `
+אתה מסייע בבניית השוואת מחירים לסל קניות בסופרמרקטים בישראל.
+קבל כתובת/עיר, רדיוס בק"מ ורשימת מוצרים (שם + כמות).
+החזר JSON בלבד לפי הסכמה שניתנת עם שדות:
+- status: "ok" | "no_results" | "need_input" | "error"
+- needed: רשימת שדות חסרים (אם need_input)
+- results: מערך של חנויות כאשר לכל חנות:
+  rank (מספר עולה לפי מחיר כולל),
+  store_name (string),
+  address (string),
+  distance_km (מספר),
+  currency (string, לדוגמה "₪"),
+  total_price (מספר),
+  basket: מערך של שורות { name, quantity, unit_price, line_total }.
+כל המחירים והחישובים חייבים להיות עקביים מתמטית: line_total = unit_price * quantity; וסכום כל line_total = total_price.
+אם אין מספיק מידע סביר לייצר תוצאות, החזר no_results.
+אל תוסיף שדות נוספים מעבר לסכמה.
+`;
+
+  const response = await client.responses.create({
+    model: MODEL,
+    instructions,
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: JSON.stringify({
+              address: req.address,
+              radius_km: req.radius_km,
+              shopping_list: req.shopping_list,
+            }),
+          },
+        ],
+      },
+    ],
+    // -------- FIX: use response_format instead of invalid `text.format` --------
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "SearchResults",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            status: { enum: ["ok", "no_results", "need_input", "error"] },
+            needed: {
+              type: "array",
+              items: { type: "string" },
+            },
+            results: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  rank: { type: "number" },
+                  store_name: { type: "string" },
+                  address: { type: "string" },
+                  distance_km: { type: "number" },
+                  currency: { type: "string" },
+                  total_price: { type: "number" },
+                  basket: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        name: { type: "string" },
+                        quantity: { type: "number" },
+                        unit_price: { type: "number" },
+                        line_total: { type: "number" },
+                      },
+                      required: ["name", "quantity", "unit_price", "line_total"],
+                      additionalProperties: false,
+                    },
+                  },
+                },
+                required: [
+                  "rank",
+                  "store_name",
+                  "address",
+                  "distance_km",
+                  "currency",
+                  "total_price",
+                  "basket",
+                ],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["status"],
+          additionalProperties: false,
+        },
+      },
+    },
+    temperature: 0.2,
+    max_output_tokens: 1200,
+  });
+
+  // Try to read JSON from the Responses API in a robust way
+  const textCandidate =
+    (response as any).output_text ??
+    ((response as any).output?.[0]?.content?.[0]?.type === "output_text"
+      ? (response as any).output[0].content[0].text
+      : undefined);
+
+  if (!textCandidate) {
+    throw new Error("LLM returned no text output");
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(textCandidate);
+  } catch (e) {
+    console.error("Failed to parse model JSON:", textCandidate);
+    throw new Error("Failed to parse model JSON");
+  }
+
+  // Basic sanity checks
+  if (parsed.status === "ok" && Array.isArray(parsed.results)) {
+    for (const r of parsed.results) {
+      if (Array.isArray(r.basket)) {
+        const sum = r.basket.reduce(
+          (acc: number, line: any) => acc + Number(line.line_total ?? 0),
+          0,
+        );
+        r.total_price = Number(sum);
+      }
+    }
+  }
+
+  return parsed;
+}
+
+// ---- Start server ----
+const port = Number(Deno.env.get("PORT") ?? "8000");
+console.log(`🛒 Supermarket compare server listening on http://localhost:${port}`);
+serve(app.fetch, { port });
