@@ -1,4 +1,4 @@
-// server_deno.ts — Deno Deploy: static via serveDir, API via Hono (text.format)
+// server_deno.ts — Deno Deploy: static via serveDir, API via Hono (text.format + name)
 import { serveDir } from "jsr:@std/http/file-server";
 import { Hono } from "jsr:@hono/hono";
 import { OpenAI } from "jsr:@openai/openai";
@@ -62,13 +62,13 @@ async function createSearchResults(req: SearchRequest) {
   const response = await client.responses.create({
     model: MODEL,
     instructions,
-    input: JSON.stringify(payload), // קלט פשוט כמחרוזת
-    // *** Structured output moved to text.format ***
+    input: JSON.stringify(payload), // קלט כמחרוזת פשוטה
+    // ---- Structured output via text.format (with name) ----
     text: {
       format: {
         type: "json_schema",
+        name: "SearchResults", // ← זה היה חסר
         json_schema: {
-          name: "SearchResults",
           strict: true,
           schema: {
             type: "object",
