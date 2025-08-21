@@ -25,78 +25,32 @@ function readEnv(c: any) {
   const key =
     (c?.env?.OPENAI_API_KEY as string | undefined) ?? Deno.env.get("OPENAI_API_KEY");
   const model =
-    (c?.env?.OPENAI_MODEL as string | undefined) ?? Deno.env.get("OPENAI_MODEL") ?? "gpt-4o";
+    (c?.env?.OPENAI_MODEL as string | undefined) ?? Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
   return { key, model };
 }
 
-/** ===== System Prompt (עקרונות) =====
-  * ה-LLM לא ממציא מחירים—אם אין לו נתונים אמיתיים, יחזיר no_results.
-  * תמיד מחזיר JSON תקין לפי הסכימה בלבד (ללא טקסט חופשי).
-*/
+/** ===== System Prompt =====
+ * ה-LLM לא ממציא מחירים/מרחקים; אם אין נתונים אמיתיים — מחזיר no_results.
+ * תמיד JSON תקין בלבד.
+ */
 const SYSTEM_PROMPT = `
-You are a strict JSON API that ranks the three cheapest supermarket branches for a shopping basket in Israel.
+You are a strict JSON API that ranks the three cheapest supermarket branches for a given shopping basket in Israel.
 
-Behavior rules:
-- Do NOT fabricate prices, distances or store data. If you cannot access real data, return "no_results".
-- If input is missing, return "need_input" with the missing fields.
-- Currency is ILS. Distances are kilometers (one decimal if needed).
-- Output MUST be valid JSON only (no prose), matching the provided JSON schema.
+Rules:
+- Do NOT fabricate prices, distances or store data. If you cannot access real, verifiable data, return {"status":"no_results"}.
+- If required inputs are missing, return {"status":"need_input","needed":[...]} with any of: "address","items","radius_km".
+- Currency is ILS; distances are kilometers (one decimal if needed).
+- Output MUST be valid JSON only (no prose).
+- Sort results from cheapest to most expensive; break ties by distance (closer first).
 `.trim();
 
-/** ===== JSON Schema ל-response_format ===== */
-const TOP3_SCHEMA = {
-  name: "Top3Groceries",
-  schema: {
-    type: "object",
-    properties: {
-      status: { type: "string", enum: ["ok", "no_results", "need_input", "error"] },
-      needed: {
-        type: "array",
-        items: { type: "string", enum: ["address", "items", "radius_km"] }
-      },
-      results: {
-        type: "array",
-        maxItems: 3,
-        items: {
-          type: "object",
-          properties: {
-            rank: { type: "integer" },
-            store_name: { type: "string" },
-            address: { type: "string" },
-            distance_km: { type: "number" },
-            total_price: { type: "number" },
-            currency: { const: "ILS" },
-            basket: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  name: { type: "string" },
-                  quantity: { type: "number" },
-                  unit_price: { type: "number" },
-                  line_total: { type: "number" },
-                },
-                required: ["name", "quantity", "unit_price", "line_total"]
-              }
-            }
-          },
-          required: ["rank", "store_name", "address", "distance_km", "total_price", "currency", "basket"]
-        }
-      }
-    },
-    required: ["status"]
-  }
-} as const;
-
-/** ===== בניית פרומפט־משתמש מהקלט =====
-  * השרת לא מחשב—רק מרכיב טקסט ברור ושולח ל-LLM.
-*/
+/** ===== בונה פרומפט-משתמש ===== */
 function buildUserPrompt(
   address: string,
   radius_km: number | string,
   shopping_list: Array<{ name: string; quantity?: number }>
 ) {
-  const normalized = (shopping_list || [])
+  const listBlock = (shopping_list ?? [])
     .map((it) => {
       const n = String(it?.name ?? "").trim();
       const q = Number(it?.quantity ?? 1);
@@ -105,47 +59,64 @@ function buildUserPrompt(
     .filter(Boolean)
     .join("\n");
 
+  // מגדירים מפורשות את מבנה ה-JSON בפלט
+  const schemaHint = `
+Return ONLY strict JSON in this shape:
+
+{
+  "status": "ok" | "no_results" | "need_input" | "error",
+  "needed": string[] | undefined,
+  "results": [
+    {
+      "rank": number,
+      "store_name": string,
+      "address": string,
+      "distance_km": number,
+      "total_price": number,
+      "currency": "ILS",
+      "basket": [
+        { "name": string, "quantity": number, "unit_price": number, "line_total": number }
+      ]
+    }
+  ]
+}
+`.trim();
+
   return `
-מצא לי את סל הקניות הזול ביותר ל-TOP-3 סניפים בתוך רדיוס נתון, והחזר אך ורק JSON לפי הסכימה (אין טקסט חופשי).
+Find the three cheapest supermarket branches (TOP-3) for this basket within the given radius and output ONLY JSON per the shape below.
 
-קלט:
-- כתובת/עיר: ${address}
-- רדיוס (ק״מ): ${radius_km}
-- רשימת קניות (שם + כמות):
-${normalized}
+Input:
+- Address/City: ${address || "<missing>"}
+- Radius (km): ${String(radius_km || "<missing>")}
+- Shopping list (one per line; each may include "; qty="):
+${listBlock || "<empty>"}
 
-דרישות:
-- אם חסר address או radius_km או רשימת קניות ריקה → החזר {"status":"need_input","needed":[...]}.
-- אם אינך יכול לאחזר נתוני אמת (שקיפות מחירים/מרחקים), החזר {"status":"no_results"}.
-- אם יש נתוני אמת, החזר {"status":"ok","results":[ {rank,store_name,address,distance_km,total_price,currency,basket:[...]}, ... ]} עד 3 תוצאות, ממויין מהזול ליקר (שוויון → הקרוב יותר).
+If any required input is missing, return:
+{"status":"need_input","needed":[...]}  // any of: "address","items","radius_km"
 
-זכור: אין לפברק נתונים. החזר JSON בלבד העומד בדיוק לסכימה.
+If you cannot access real, verifiable pricing/branch data, return:
+{"status":"no_results"}
+
+Otherwise return:
+${schemaHint}
 `.trim();
 }
 
-/** ===== קריאה ל-LLM ===== */
+/** ===== קריאה ל-LLM (Responses API עם text.format=json) ===== */
 async function callLLM(userPrompt: string, client: OpenAI, model: string) {
   try {
     const resp = await client.responses.create({
       model,
-      instructions: SYSTEM_PROMPT,       // במקום system
-      input: userPrompt,                 // הטקסט הקבוע שנבנה בשרת
-      response_format: {                 // מחייב החזרת JSON לפי סקימה
-        type: "json_schema",
-        json_schema: TOP3_SCHEMA,
-      },
-      // שומרים את זה ללא tools כדי להימנע משגיאות הרשאות/קונטיינר
-      // tools: [{ type: "web_search" }, { type: "code_interpreter" }],
+      instructions: SYSTEM_PROMPT,
+      input: userPrompt,
+      // שימו לב: זה הפורמט החדש! (במקום response_format)
+      text: { format: "json" },
+      // לא מפעילים tools כדי להימנע משגיאות הרשאות/קונטיינר ב-Deno Deploy
     });
 
-    // עדיפות לפענוח מובנה אם קיים
+    // נסה לקבל פלט מובנה
     const anyResp = resp as any;
-    if (anyResp.output_parsed) {
-      return anyResp.output_parsed;
-    }
-
-    // אחרת—ננסה מפלט טקסטואלי
-    const text =
+    const textOut: string =
       anyResp.output_text ??
       (Array.isArray(anyResp.output)
         ? anyResp.output
@@ -153,16 +124,22 @@ async function callLLM(userPrompt: string, client: OpenAI, model: string) {
               Array.isArray(o.content) ? o.content.map((c: any) => c.text || "").join("\n") : ""
             )
             .join("\n")
-        : JSON.stringify(resp));
+        : "");
+
+    if (!textOut) {
+      // fallback אחרון: החזר את כל המענה גולמי כדי להבין מה קרה
+      return { status: "error", message: "Empty model output", raw: anyResp };
+    }
 
     try {
-      return JSON.parse(String(text).trim());
+      return JSON.parse(textOut);
     } catch {
-      const m = String(text).match(/\{[\s\S]*\}/);
+      // נסה לחלץ בלוק JSON
+      const m = String(textOut).match(/\{[\s\S]*\}/);
       if (m) {
         try { return JSON.parse(m[0]); } catch {}
       }
-      return { status: "error", message: "Model did not return valid JSON", raw: text };
+      return { status: "error", message: "Model did not return valid JSON", raw: textOut };
     }
   } catch (e: any) {
     console.error("LLM error:", e?.message || e);
@@ -175,14 +152,14 @@ async function callLLM(userPrompt: string, client: OpenAI, model: string) {
 // Health
 app.get("/health", (c) => c.text("ok"));
 
-// API: TOP-3 cheapest (כולו דרך LLM, השרת לא מחשב)
+// API: TOP-3 cheapest (כולו דרך LLM; השרת אינו מחשב)
 app.post("/api/search", async (c) => {
   try {
     const { key, model } = readEnv(c);
     if (!key) return c.json({ status: "error", message: "OPENAI_API_KEY missing" }, 500);
     const client = getOpenAIClient(key);
 
-    // קלט מהמשתמש
+    // קלט מהלקוח
     const body = await c.req.json().catch(() => ({}));
     const address = String(body?.address ?? "").trim();
     const radius_km = body?.radius_km ?? "";
