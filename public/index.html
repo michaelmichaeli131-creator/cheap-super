@@ -4,270 +4,233 @@
   <meta charset="utf-8" />
   <title>השוואת סל קניות AI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- ======= MODERN WOLT-STYLE THEME ======= -->
+  <!-- ===== THEME (modern, light blue) ===== -->
   <style>
     :root{
-      /* Palette */
-      --bg: #f6fbff;
-      --card: #ffffff;
-      --ink: #0f172a;
-      --muted: #667085;
-      --brand: #2fb6ff;
-      --brand-600:#15a8f6;
-      --brand-700:#0f94db;
-      --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
-
-      /* Effects & Radii */
-      --radius-lg: 20px;
-      --radius: 16px;
-      --shadow-lg: 0 18px 55px rgba(12,40,80,.12);
-      --shadow:   0 10px 30px rgba(16, 24, 40, .08);
-
-      /* Typography (fluid) */
-      --fs-hero: clamp(22px, 4.5vw, 28px);
-      --fs-h2:   clamp(18px, 3.8vw, 22px);
-      --fs-body: 16px;
-
-      /* Motion */
-      --ease: cubic-bezier(.2,.8,.2,1);
-      --speed: .28s;
+      --ink:#0d1321; --muted:#6b7280;
+      --brand:#2fb6ff; --brand-700:#0f94db;
+      --bg:#f5f9ff; --card:#fff; --glass:#ffffffcc;
+      --black:#111;
+      --radius-xl:28px; --radius:18px;
+      --shadow-lg:0 30px 60px rgba(15,50,90,.18);
+      --shadow:0 14px 34px rgba(15,50,90,.12);
+      --ease:cubic-bezier(.2,.8,.2,1);
+      --speed:.28s;
     }
-    @media (prefers-color-scheme: dark) {
-      :root{
-        --bg:#0b1220; --card:#0f1628cc; --ink:#eff6ff; --muted:#9aa4b2;
-        --shadow: 0 10px 30px rgba(0,0,0,.35);
-        --shadow-lg: 0 18px 55px rgba(0,0,0,.5);
-      }
-      .glass{ backdrop-filter: blur(14px) saturate(125%); }
-      .row{ background: #111a2f; border-color: #1a2745; }
+    @media (prefers-color-scheme: dark){
+      :root{ --bg:#0b1220; --card:#111827; --ink:#e5eefb; --muted:#9aa4b2; --glass:#111827cc;
+             --shadow:0 14px 34px rgba(0,0,0,.38); --shadow-lg:0 30px 60px rgba(0,0,0,.55); }
+      .row{background:#0f172a;border-color:#1f2b46;color:#e5eefb}
     }
     *{box-sizing:border-box}
-    html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     body{accent-color:var(--brand)}
-    .app{max-width:440px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;position:relative;overflow:hidden}
+    .app{max-width:440px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
 
-    /* Background blobs */
-    .bg-blob{
-      position:absolute; inset: -10% -30% auto auto; width:70%; aspect-ratio:1/1;
-      background: radial-gradient(60% 60% at 50% 50%, #e8f6ff 0%, #dff2ff 45%, transparent 60%);
-      filter: blur(10px); pointer-events:none; z-index:0;
+    /* ===== Landing (minimal) ===== */
+    .landing{position:relative; min-height:100dvh; padding:24px 16px 120px;
+      display:flex; flex-direction:column; justify-content:space-between;
+      background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%)}
+    .landing-blob{position:absolute; right:-20%; top:-10%; width:70%; aspect-ratio:1/1;
+      background:radial-gradient(60% 60% at 50% 50%, #bfe8ff 0%, #9fdcff 40%, transparent 60%);
+      filter:blur(18px); opacity:.6; pointer-events:none}
+    .landing-head{display:flex; align-items:center; justify-content:space-between}
+    .brand-mini{display:flex; align-items:center; gap:10px; font-weight:900}
+    .brand-mini .dot{width:14px;height:14px;border-radius:50%;
+      background:linear-gradient(135deg,#76d2ff,#2fb6ff); box-shadow:0 6px 12px #2fb6ff55}
+    .how{color:#075985;text-decoration:underline;font-weight:700}
+    .landing-center{text-align:center; margin-top:10vh}
+    .hero-title{font-size:clamp(22px,5.2vw,32px); line-height:1.15; margin:0}
+    .hero-sub{color:var(--muted); margin:.5rem 0 1.1rem}
+    .badges{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:1.1rem}
+    .badge.chip{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;
+      box-shadow:0 8px 18px #0b3b6a12; font-weight:700}
+    .hero-cta{width:100%; margin-top:.6rem}
+    .landing-foot{display:flex; justify-content:center; margin-top:2rem}
+    .trust{color:#7c8aa0; font-size:12px; display:flex; align-items:center; gap:8px}
+    .trust-dot{width:6px;height:6px;border-radius:50%; background:#9aa4b2}
+    .trust-dot.ok{background:#10b981}
+    .sep{opacity:.4}
+
+    /* ===== Generic layout ===== */
+    .screen{display:none}
+    .screen.active{display:block}
+    .page{padding:0 16px 110px}
+    .box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px}
+    .muted{color:var(--muted)}
+
+    /* Inputs */
+    .input{display:flex; flex-direction:column; gap:8px}
+    .input input,.input textarea{
+      width:100%; padding:14px; border-radius:16px; border:1px solid #e6edf7; outline:none;
+      box-shadow:0 6px 12px #0b3b6a0e; font-size:16px;
+      transition:border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease), transform var(--speed) var(--ease)
     }
-    .bg-blob.b2{ inset:auto auto -25% -35%; width:90%; transform:rotate(8deg); }
+    .input input:focus,.input textarea:focus{border-color:var(--brand); box-shadow:0 0 0 6px #2fb6ff22; transform:translateY(-1px)}
 
-    header{padding:16px 20px; position:relative; z-index:1}
-    .brand{display:flex;align-items:center;gap:12px}
-    .logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#76d2ff,#2fb6ff); box-shadow:inset 0 -6px 10px #2fb6ff55, 0 6px 14px #2fb6ff33}
-    .brand h1{font-size:18px;margin:0;line-height:1.1}
-    .brand small{display:block;color:var(--muted);font-weight:600}
+    /* Chips (radius) */
+    .radius-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+    .btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800}
+    .btn-chip[data-active="1"]{background:#cfeeff}
 
-    .screen{padding:20px 16px 108px; position:relative; z-index:1; opacity:0; transform:translateY(10px);
-      transition: opacity var(--speed) var(--ease), transform var(--speed) var(--ease)}
-    .screen.active{opacity:1; transform:none}
-    .card{background:var(--card);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:18px}
-    .glass{background:linear-gradient(180deg,#ffffffbb,#ffffff90);border:1px solid #e9eef5; }
+    /* Results rows */
+    .row{display:flex; justify-content:space-between; align-items:center; padding:14px; border-radius:16px; background:#fff; border:1px solid #eaf1fb}
+    .row + .row{margin-top:10px}
+    .total{font-size:18px; font-weight:900}
 
-    h2{margin:0 0 10px; font-size:var(--fs-h2)}
-    p.muted{margin:6px 0 0;color:var(--muted); font-size:var(--fs-body)}
+    /* CTA sticky */
+    .cta{position:fixed; inset-inline:0; bottom:0; background:var(--glass); backdrop-filter:blur(12px);
+      border-top:1px solid #e6edf7; box-shadow:0 -10px 30px #0b3b6a14}
+    .cta .inner{max-width:440px; margin:0 auto; display:flex; gap:10px; padding:12px 16px}
+    .btn{appearance:none; border:none; border-radius:14px; padding:14px 16px; font-weight:900; cursor:pointer}
+    .btn-black{background:#111; color:#fff; box-shadow:0 8px 20px #00000030}
+    .btn-ghost{background:#eaf6ff; color:#075985}
+    .btn:active{transform:translateY(1px)}
 
-    /* Hero */
-    .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;padding:22px}
-    .hero .art{width:190px;height:190px;border-radius:28px;background:linear-gradient(135deg,#e8f6ff,#dff2ff);display:grid;place-items:center;box-shadow:var(--shadow)}
-    .pill{display:inline-flex;align-items:center;gap:6px;background:#e8f6ff;color:#0369a1;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:700}
-
-    .input{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-    .input label{font-weight:700}
-    .input input,.input textarea,.input select{
-      width:100%;padding:14px;border-radius:16px;border:1px solid #dfe6ee;background:#fff;color:var(--ink);font-size:16px;outline:none;
-      transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease), transform var(--speed) var(--ease);
-    }
-    .input input:focus,.input textarea:focus,.input select:focus{
-      border-color:var(--brand); box-shadow:0 0 0 6px #2fb6ff22; transform: translateY(-1px);
-    }
-    .help{font-size:12px;color:var(--muted)}
-
-    /* Chips */
-    .grid{display:grid;gap:12px}
-    .grid.cols-2{grid-template-columns:1fr 1fr}
-    .chip{
-      background:#eef7ff; color:#0369a1; border:none; border-radius:999px; padding:12px; font-weight:700; cursor:pointer;
-      transition: transform var(--speed) var(--ease), background var(--speed) var(--ease);
-    }
-    .chip:active{ transform: translateY(1px) }
-    .chip[data-active="1"]{ background:#cfeeff }
-
-    /* CTA bar */
-    .cta-bar{
-      position:fixed;inset-inline:0;bottom:0;background:linear-gradient(180deg, #ffffffc8, #ffffffee);
-      backdrop-filter: blur(12px); border-top:1px solid #e9eef5; box-shadow:0 -10px 30px rgba(16,24,40,.08); z-index:2;
-    }
-    .cta-inner{max-width:440px;margin:0 auto;padding:12px 16px;display:flex;gap:10px}
-    button.btn{appearance:none;border:none;border-radius:16px;padding:14px 18px;font-size:16px;font-weight:800;cursor:pointer;transition: transform var(--speed) var(--ease), box-shadow var(--speed) var(--ease) }
-    .btn-primary{background:var(--brand);color:#fff; box-shadow:0 10px 20px #2fb6ff40}
-    .btn-primary:hover{ transform: translateY(-1px); box-shadow:0 12px 26px #2fb6ff50 }
-    .btn-primary:active{ transform: translateY(0) }
-    .btn-ghost{background:#e7f6ff;color:#0369a1;font-weight:800}
-
-    /* List + rows */
-    .list{display:flex;flex-direction:column;gap:12px}
-    .row{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:16px;padding:14px;border:1px solid #eef2f7}
-    .price{font-weight:900}
-    .badge{padding:6px 10px;border-radius:999px;font-size:11px}
-    .badge.ok{background:#ecfdf5;color:#065f46}
-    .badge.warn{background:#fff7ed;color:#92400e}
-    .badge.sub{background:#fffbea;color:#713f12}
-
-    /* Skeleton loader */
+    /* Skeleton */
     .skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
-    .skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent, #ffffff66, transparent);animation:shimmer 1.4s infinite}
+    .skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite}
     @keyframes shimmer{100%{transform:translateX(100%)}}
-
-    /* Spinner (fallback) */
-    .loading{display:none;gap:8px;align-items:center}
-    .loading.show{display:flex}
-    .spinner{width:18px;height:18px;border:3px solid #cfefff;border-top-color:#2fb6ff;border-radius:50%;animation:spin 1s linear infinite}
-    @keyframes spin{to{transform:rotate(360deg)}}
-
-    /* RTL */
-    [dir="rtl"] .row > *:last-child{text-align:left}
-
-    /* Utils */
-    .mt-12{margin-top:12px}
-    .hide{display:none}
   </style>
 </head>
 <body>
 <div class="app">
-  <!-- Background accents -->
-  <div class="bg-blob"></div><div class="bg-blob b2"></div>
 
-  <header>
-    <div class="brand">
-      <div class="logo" aria-hidden="true"></div>
-      <div>
-        <h1>השוואת סל קניות <small>AI</small></h1>
-        <small>מוצא לך את הזול במהירות</small>
-      </div>
-    </div>
-  </header>
+  <!-- ===== Screen 1: Landing (clean) ===== -->
+  <section id="s1" class="screen active">
+    <div class="landing">
+      <header class="landing-head">
+        <div class="brand-mini">
+          <div class="dot" aria-hidden="true"></div>
+          <span>CartCompare <b>AI</b></span>
+        </div>
+        <a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
+      </header>
 
-  <!-- Screen 1: Landing -->
-  <section id="screen-1" class="screen active">
-    <div class="card glass hero">
-      <div class="art" aria-hidden="true">
-        <!-- Simple cart + AI chip SVG -->
-        <svg width="120" height="120" viewBox="0 0 200 200" fill="none" aria-hidden="true">
-          <defs>
-            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#76d2ff"/><stop offset="1" stop-color="#2fb6ff"/>
-            </linearGradient>
-          </defs>
-          <rect x="20" y="52" width="160" height="86" rx="16" fill="url(#g1)"/>
-          <circle cx="70" cy="148" r="12" fill="#fff"/><circle cx="140" cy="148" r="12" fill="#fff"/>
-          <rect x="120" y="24" width="40" height="24" rx="6" fill="#e7f6ff" stroke="#2fb6ff"/>
-          <path d="M126 30h28v12h-28z" fill="#2fb6ff"/>
-        </svg>
+      <div class="landing-center">
+        <h1 class="hero-title">מצא/י את סל הקניות הזול לידך</h1>
+        <p class="hero-sub">מוצא את הזול במהירות באמצעות AI</p>
+
+        <div class="badges">
+          <span class="badge chip">⚡ חוסך זמן</span>
+          <span class="badge chip">💸 מחיר הכי זול</span>
+          <span class="badge chip">🤖 AI</span>
+        </div>
+
+        <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
       </div>
-      <span class="pill">
-        <!-- AI icon -->
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="#0369a1" aria-hidden="true">
-          <path d="M12 2a6 6 0 0 0-6 6v8a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4V8a6 6 0 0 0-6-6zm-1 7h2v6h-2V9zm-3 2h2v4H8v-4zm8 0v4h-2v-4h2z"/>
-        </svg>
-        חכם • מהיר • משתלם
-      </span>
-      <h2 style="font-size:var(--fs-hero)">בואו נתחיל</h2>
-      <p class="muted">נמצא עבורך את הסופר הזול באזור שלך תוך דקות, בלי להתאמץ.</p>
+
+      <footer class="landing-foot">
+        <div class="trust">
+          <span class="trust-dot"></span> פרטיות כברירת מחדל
+          <span class="sep">•</span>
+          <span class="trust-dot ok"></span> חינם לנסיון
+        </div>
+      </footer>
+
+      <div class="landing-blob" aria-hidden="true"></div>
     </div>
   </section>
 
-  <!-- Screen 2: Address -->
-  <section id="screen-2" class="screen">
-    <div class="card glass">
-      <h2>מה הכתובת שלך?</h2>
-      <p class="muted">אפשר לכתוב עיר/רחוב. (בעתיד: שיתוף GPS)</p>
-      <div class="input">
-        <label for="address">כתובת / עיר</label>
-        <input id="address" type="text" placeholder="למשל: תל אביב" />
-        <div class="help">דוגמה: “חולון”, “בן יהודה 10 תל אביב”</div>
+  <!-- ===== Screen 2: Address ===== -->
+  <section id="s2" class="screen">
+    <div class="page">
+      <div class="box">
+        <div style="font-weight:800; font-size:20px">מה הכתובת שלך?</div>
+        <div class="muted" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
+        <div class="input" style="margin-top:12px">
+          <label class="muted" for="address">כתובת / עיר</label>
+          <input id="address" placeholder="למשל: תל אביב, בן יהודה 10" />
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- Screen 3: Radius -->
-  <section id="screen-3" class="screen">
-    <div class="card">
-      <h2>לחפש באיזה רדיוס?</h2>
-      <p class="muted">בחר/י כמה קילומטרים מסביב לכתובת.</p>
-      <div class="grid cols-2 mt-12">
-        <button class="chip" type="button" data-radius="2">2 ק״מ</button>
-        <button class="chip" type="button" data-radius="5">5 ק״מ</button>
-        <button class="chip" type="button" data-radius="10">10 ק״מ</button>
-        <button class="chip" type="button" data-radius="15">15 ק״מ</button>
-      </div>
-      <div class="input" style="margin-top:12px">
-        <label for="radius">או הזינו ידנית</label>
-        <input id="radius" type="number" min="1" step="0.5" placeholder="למשל: 5" />
-      </div>
-    </div>
-  </section>
-
-  <!-- Screen 4: List -->
-  <section id="screen-4" class="screen">
-    <div class="card">
-      <h2>מה תרצה לקנות?</h2>
-      <p class="muted">כתבו טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</p>
-      <div class="input">
-        <label for="list">רשימת קניות</label>
-        <textarea id="list" rows="5" placeholder="לדוגמה: שישיית מים 1.5 ליטר, 2 חלב 3%, קוקה קולה 2 בקבוקים, ספגטי, 10 פיתות"></textarea>
-        <div class="help">אפשר גם “חלב שתי קרטונים, קופסת עגבניות מרוסקות 3, פסטה, שמן זית”.</div>
+  <!-- ===== Screen 3: Radius ===== -->
+  <section id="s3" class="screen">
+    <div class="page">
+      <div class="box">
+        <div style="font-weight:800; font-size:20px">רדיוס חיפוש</div>
+        <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
+        <div class="radius-grid" style="margin-top:12px">
+          <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
+          <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
+          <button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
+          <button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
+        </div>
+        <div class="input" style="margin-top:12px">
+          <label class="muted" for="radius">או הזן/י ידנית</label>
+          <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- Screen 5: Results -->
-  <section id="screen-5" class="screen">
-    <div class="card">
-      <h2>התוצאות</h2>
-      <p class="muted">מדורגות מהזול ליקר (לפי ה-LLM). לחץ/י תוצאה לפרטים.</p>
+  <!-- ===== Screen 4: List ===== -->
+  <section id="s4" class="screen">
+    <div class="page">
+      <div class="box">
+        <div style="font-weight:800; font-size:20px">מה תרצה לקנות?</div>
+        <div class="muted" style="margin-top:6px">כתבו טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</div>
+        <div class="input" style="margin-top:12px">
+          <textarea id="list" rows="5" placeholder="לדוגמה: שישיית מים 1.5 ליטר, 2 חלב 3%, ספגטי, 10 פיתות, 2 בקבוקי קולה"></textarea>
+        </div>
+      </div>
+    </div>
+  </section>
 
-      <div id="results" class="list mt-12"></div>
-
-      <div class="loading" id="loading">
-        <div class="spinner" aria-hidden="true"></div><span>מחפש את העסקה המשתלמת…</span>
+  <!-- ===== Screen 5: Results ===== -->
+  <section id="s5" class="screen">
+    <div class="page">
+      <div class="box">
+        <div style="font-weight:800; font-size:20px">התוצאות</div>
+        <div class="muted" style="margin-top:6px">מדורגות מהזול ליקר (לפי ה-LLM)</div>
+        <div id="results" style="margin-top:12px"></div>
+        <div id="loading" class="skeleton" style="height:64px; margin-top:12px; display:none"></div>
       </div>
     </div>
   </section>
 
   <!-- Sticky CTA -->
-  <div class="cta-bar">
-    <div class="cta-inner">
+  <div class="cta">
+    <div class="inner">
       <button id="back" class="btn btn-ghost" type="button">חזרה</button>
-      <button id="next" class="btn btn-primary" type="button">הבא</button>
+      <button id="next" class="btn btn-black" type="button">הבא</button>
     </div>
   </div>
 </div>
 
-<!-- ======= APP LOGIC ======= -->
+<!-- ===== App logic ===== -->
 <script>
-  const screens = [
-    document.getElementById('screen-1'),
-    document.getElementById('screen-2'),
-    document.getElementById('screen-3'),
-    document.getElementById('screen-4'),
-    document.getElementById('screen-5')
-  ];
+  // screens router
+  const screens = ['s1','s2','s3','s4','s5'].map(id=>document.getElementById(id));
   let step = 0;
-
-  const btnNext = document.getElementById('next');
-  const btnBack = document.getElementById('back');
+  const btnNext  = document.getElementById('next');
+  const btnBack  = document.getElementById('back');
+  const startBtn = document.getElementById('startBtn');
+  const howLink  = document.getElementById('howLink');
 
   const addressEl = document.getElementById('address');
-  const radiusEl = document.getElementById('radius');
-  const listEl = document.getElementById('list');
+  const radiusEl  = document.getElementById('radius');
+  const listEl    = document.getElementById('list');
 
   const resultsEl = document.getElementById('results');
   const loadingEl = document.getElementById('loading');
 
-  // highlight chosen radius chip
+  function goto(n){
+    step = Math.max(0, Math.min(4, n));
+    screens.forEach((s,i)=> s.classList.toggle('active', i===step));
+    btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
+    btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  goto(0);
+
+  startBtn?.addEventListener('click', ()=> goto(1));
+  howLink?.addEventListener('click', ()=> goto(1));
+
+  // radius chips
   document.querySelectorAll('[data-radius]').forEach(b=>{
     b.addEventListener('click', ()=>{
       document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
@@ -277,133 +240,88 @@
     });
   });
 
-  function goto(n){
-    step = Math.max(0, Math.min(4, n));
-    screens.forEach((s,i)=>{
-      const on = (i===step);
-      s.classList.toggle('active', on);
-      s.classList.toggle('hide', !on);
-    });
-    btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
-    btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
-  }
-  goto(0);
-
   btnBack.addEventListener('click', ()=>{
-    if(step===0){ window.history.length>1 ? history.back() : null; return; }
+    if(step===0){ return; }
     goto(step-1);
   });
 
   btnNext.addEventListener('click', async ()=>{
-    // tiny validation per step
-    if(step===1 && !addressEl.value.trim()){ shake(addressEl); return; }
-    if(step===2 && !radiusEl.value){ shake(radiusEl); return; }
-    if(step===3 && !listEl.value.trim()){ shake(listEl); return; }
+    if(step===1){
+      if(!addressEl.value.trim()) return shake(addressEl);
+      return goto(step+1);
+    }
+    if(step===2){
+      if(!radiusEl.value) return shake(radiusEl);
+      return goto(step+1);
+    }
+    if(step===3){
+      if(!listEl.value.trim()) return shake(listEl);
+      return goto(step+1);
+    }
+    if(step<4) return goto(step+1);
 
-    if(step<4){ goto(step+1); return; }
-
-    // Step 5: call server
+    // Screen 5: call API
     renderSkeleton();
-    loadingEl.classList.add('show');
-
-    const payload = {
-      address: addressEl.value.trim(),
-      radius_km: Number(radiusEl.value || 5),
-      list_text: listEl.value.trim()
-    };
-
     try{
+      const payload = {
+        address: addressEl.value.trim(),
+        radius_km: Number(radiusEl.value || 5),
+        list_text: listEl.value.trim()
+      };
       const res = await fetch('/api/search', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
+        method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      loadingEl.classList.remove('show');
+
+      loadingEl.style.display = 'none';
 
       if(!res.ok){
-        resultsEl.innerHTML = rowError(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
+        resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
+        return;
+      }
+      if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
+        resultsEl.innerHTML = row('לא נמצאו תוצאות', 'נסו להגדיל את הרדיוס או לשנות ניסוח');
         return;
       }
 
-      if(data.status==='need_input'){
-        resultsEl.innerHTML = rowWarn('חסרים שדות', (data.needed||[]).join(', '));
-        return;
-      }
-      if(data.status==='no_results' || !Array.isArray(data.results) || data.results.length===0){
-        resultsEl.innerHTML = rowInfo('לא נמצאו תוצאות', 'נסו להגדיל רדיוס או לשנות ניסוח');
-        return;
-      }
-
-      // Render results exactly as returned (LLM sorts cheapest→expensive)
+      // Render cards (LLM already sorted cheapest→expensive)
       resultsEl.innerHTML = data.results.map(r=>{
         const total = Number(r.total_price||0).toFixed(2);
-        const mo = (typeof r.match_overall==='number') ? `${Math.round(r.match_overall*100)}%` : '—';
+        const img = r.cover_image || 'img/store_placeholder.jpg';
         return `
-          <div class="row">
-            <div>
-              <div><strong>#${esc(r.rank)} — ${esc(r.store_name)}</strong></div>
-              <div class="muted" style="font-size:12px">${esc(r.address)} • ${esc(r.distance_km)} ק״מ • דיוק כללי ${mo}</div>
+          <article class="card" style="min-width:100%;aspect-ratio:10/9">
+            <img src="${esc(img)}" alt="${esc(r.store_name)}"
+                 onerror="this.src='data:image/svg+xml;utf8,<?xml version=&quot;1.0&quot;?><svg xmlns=&quot;http://www.w3.org/2000/svg&quot; width=&quot;600&quot; height=&quot;540&quot;><rect width=&quot;100%&quot; height=&quot;100%&quot; fill=&quot;%23dff1ff&quot;/></svg>'">
+            <div class="shade"></div>
+            <div class="price-tag">${total} ${esc(r.currency||'₪')}</div>
+            <div class="meta">
+              <div class="title">#${esc(r.rank)} — ${esc(r.store_name)}</div>
+              <div class="badge">${esc(r.address)} • ${esc(r.distance_km)} ק״מ</div>
             </div>
-            <div class="price">${total} ${esc(r.currency||'₪')}</div>
-          </div>
-          <details class="card" style="margin-top:10px">
-            <summary style="cursor:pointer;color:#0369a1">פירוט סל</summary>
-            <div class="list" style="margin-top:10px">
-              ${Array.isArray(r.basket)?r.basket.map(b=>{
-                const conf = (typeof b.match_confidence==='number') ? `${Math.round(b.match_confidence*100)}%`:'—';
-                const unit = Number(b.unit_price||0).toFixed(2);
-                const line = Number(b.line_total||0).toFixed(2);
-                const sub = b.substitution ? '<span class="badge sub">תחליף</span>' : '';
-                const notes = b.notes ? `<div class="muted" style="font-size:12px">${esc(b.notes)}</div>` : '';
-                return `
-                  <div class="row">
-                    <div>
-                      <div><strong>${esc(b.name)}</strong> ${sub}</div>
-                      <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity)} • דיוק: ${conf}</div>
-                      ${notes}
-                    </div>
-                    <div class="price">${line}</div>
-                  </div>`;
-              }).join(''):''}
-            </div>
-          </details>
+          </article>
         `;
       }).join('');
 
     }catch(err){
-      loadingEl.classList.remove('show');
-      resultsEl.innerHTML = rowError('שגיאה ברשת', err.message || String(err));
+      loadingEl.style.display = 'none';
+      resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
     }
   });
 
-  // Skeleton rows (nice shimmer)
   function renderSkeleton(){
-    resultsEl.innerHTML = `
-      <div class="skeleton" style="height:64px"></div>
-      <div class="skeleton mt-12" style="height:64px"></div>
-      <div class="skeleton mt-12" style="height:64px"></div>
-    `;
+    resultsEl.innerHTML = '';
+    loadingEl.style.display = 'block';
   }
-
-  // Small helpers
-  function rowError(title, msg){
-    return `<div class="row" style="border-color:#ffe4e6"><div>${esc(title)}</div><div style="color:var(--danger)">${esc(msg)}</div></div>`;
-  }
-  function rowWarn(title, msg){
-    return `<div class="row"><div>${esc(title)}</div><div class="badge warn">${esc(msg)}</div></div>`;
-  }
-  function rowInfo(title, msg){
-    return `<div class="row"><div>${esc(title)}</div><div class="muted" style="font-size:12px">${esc(msg)}</div></div>`;
+  function row(title, msg){
+    return `<div class="row"><div><strong>${esc(title)}</strong><div class="muted" style="font-size:12px">${esc(msg)}</div></div></div>`;
   }
   function shake(el){
-    el.style.borderColor = '#fda4af';
+    el.style.borderColor = '#ffb4b4';
     el.animate([{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],{duration:260});
-    setTimeout(()=>el.style.borderColor='#dfe6ee',320);
+    setTimeout(()=>el.style.borderColor='#e6edf7',320);
   }
-  function esc(s){
-    return String(s??'').replace(/[&<>"'`=\/]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;" }[c]));
-  }
+  function esc(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
 </script>
 </body>
 </html>
