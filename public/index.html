@@ -1,185 +1,326 @@
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
-  <meta charset="UTF-8" />
-  <title>השוואת מחירי סל קניות</title>
+  <meta charset="utf-8" />
+  <title>השוואת סל קניות AI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- Bootstrap -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <!-- עיצוב תכלת-לבן בסגנון Wolt, מותאם מובייל -->
   <style>
-    body { background: #f8f9fa; }
-    .container { max-width: 900px; margin-top: 40px; }
-    textarea { font-size: 0.95rem; }
-    .spinner-border { display: none; vertical-align: middle; }
-    .badge-sub { background: #ffe08a; color: #3b3b00; }
-    .muted { color: #6c757d; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    :root{
+      --bg:#f6fbff;
+      --card:#ffffff;
+      --brand:#2fb6ff;
+      --brand-600:#15a8f6;
+      --ink:#0f172a;
+      --muted:#6b7280;
+      --ok:#10b981;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+      --radius:18px;
+      --shadow:0 10px 30px rgba(16, 24, 40, .08);
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .app{max-width:440px;margin:0 auto;min-height:100%;display:flex;flex-direction:column}
+    header{padding:16px 20px;background:linear-gradient(180deg,#e9f7ff,transparent)}
+    .brand{display:flex;align-items:center;gap:12px}
+    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#76d2ff,#2fb6ff)}
+    .brand h1{font-size:20px;margin:0}
+    .brand small{display:block;color:var(--muted);font-weight:500}
+    .screen{padding:18px 16px 96px}
+    .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}
+    h2{margin:0 0 10px}
+    p.muted{margin:6px 0 0;color:var(--muted)}
+    .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px}
+    .hero .art{width:180px;height:180px;border-radius:28px;background:linear-gradient(135deg,#e8f6ff,#dff2ff);display:grid;place-items:center;box-shadow:var(--shadow)}
+    .pill{display:inline-flex;align-items:center;gap:6px;background:#e8f6ff;color:#0369a1;border-radius:999px;padding:6px 12px;font-size:12px}
+    .input{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+    .input label{font-weight:600}
+    .input input,.input textarea,.input select{
+      width:100%;padding:14px 14px;border-radius:14px;border:1px solid #e5e7eb;background:#fff;font-size:16px;outline:none
+    }
+    .help{font-size:12px;color:var(--muted)}
+    .grid{display:grid;gap:12px}
+    .grid.cols-2{grid-template-columns:1fr 1fr}
+    .cta-bar{
+      position:fixed;inset-inline:0;bottom:0;background:#ffffffcc;
+      backdrop-filter:blur(10px);box-shadow:0 -8px 30px rgba(16,24,40,.08)
+    }
+    .cta-inner{max-width:440px;margin:0 auto;padding:12px 16px;display:flex;gap:10px}
+    button.btn{
+      appearance:none;border:none;border-radius:14px;padding:14px 18px;font-size:16px;font-weight:700;cursor:pointer
+    }
+    .btn-primary{background:var(--brand);color:#fff}
+    .btn-primary:active{transform:translateY(1px)}
+    .btn-ghost{background:#e7f6ff;color:#0369a1;font-weight:700}
+    .btn-link{background:transparent;color:#0369a1;text-decoration:underline;padding:0 2px}
+    .chips{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{padding:10px 12px;border-radius:999px;background:#eef6ff;color:#0369a1;font-weight:600;font-size:14px}
+    .list{display:flex;flex-direction:column;gap:12px}
+    .row{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:14px;padding:12px 14px;border:1px solid #eef2f7}
+    .price{font-weight:800}
+    .badge{padding:6px 10px;border-radius:999px;font-size:11px}
+    .badge.ok{background:#ecfdf5;color:#065f46}
+    .badge.warn{background:#fff7ed;color:#92400e}
+    .badge.sub{background:#fffbea;color:#713f12}
+    .loading{display:none;gap:8px;align-items:center}
+    .loading.show{display:flex}
+    .spinner{width:18px;height:18px;border:3px solid #cfefff;border-top-color:#2fb6ff;border-radius:50%;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    /* RTL tweaks */
+    [dir="rtl"] .row > *:last-child{text-align:left}
+    .hide{display:none}
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1 class="mb-3">השוואת סל קניות בסופרמרקטים</h1>
-    <p class="text-muted">
-      כתבו את רשימת הקניות <strong>בטקסט חופשי</strong> (לא חייב פסיקים/שורות). לדוגמה:
-      <span class="mono">שישיית מים 1.5 ליטר, 10 פיתות, חלב 3 אחוז 2, קוקה קולה בקבוקים 2</span>
-    </p>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="logo"></div>
+      <div>
+        <h1>השוואת סל קניות <small>AI</small></h1>
+        <small>מוצא לך את הזול במהירות</small>
+      </div>
+    </div>
+  </header>
 
-    <form id="searchForm" class="card p-3 shadow-sm">
-      <div class="row g-3">
-        <div class="col-md-6">
-          <label class="form-label">כתובת / עיר</label>
-          <input type="text" class="form-control" id="address" required placeholder="למשל: חולון" />
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">רדיוס (בק״מ)</label>
-          <input type="number" class="form-control" id="radius" required min="1" step="0.5" value="5" />
-        </div>
-        <div class="col-12">
-          <label class="form-label">רשימת קניות (טקסט חופשי)</label>
-          <textarea id="shoppingList" class="form-control" rows="4" required
-            placeholder="לדוגמה: שישיית מים 1.5 ליטר, 10 פיתות, 2 חלב 3%, קוקה קולה 2 בקבוקים, ספגטי"></textarea>
-          <div class="form-text">
-            אין חובה להפריד בפסיקים — המערכת תנסה להבין מוצרים וכמויות גם ממשפט חופשי.
-          </div>
+  <!-- Screen 1: Landing -->
+  <section id="screen-1" class="screen">
+    <div class="card hero">
+      <div class="art">
+        <!-- לוגו/איור SVG אינליין -->
+        <svg width="120" height="120" viewBox="0 0 200 200" fill="none">
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#76d2ff"/>
+              <stop offset="1" stop-color="#2fb6ff"/>
+            </linearGradient>
+          </defs>
+          <rect x="20" y="50" width="160" height="90" rx="16" fill="url(#g1)"/>
+          <circle cx="70" cy="150" r="12" fill="#fff"/>
+          <circle cx="140" cy="150" r="12" fill="#fff"/>
+          <path d="M40 60 L60 30" stroke="#2fb6ff" stroke-width="10" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="pill">חכם • מהיר • משתלם</div>
+      <h2>בואו נתחיל</h2>
+      <p class="muted">נמצא עבורך את הסופר הזול באזור שלך תוך דקות, בלי להתאמץ.</p>
+    </div>
+  </section>
+
+  <!-- Screen 2: Address -->
+  <section id="screen-2" class="screen hide">
+    <div class="card">
+      <h2>מה הכתובת שלך?</h2>
+      <p class="muted">אפשר לכתוב עיר/רחוב. (בעתיד: שיתוף GPS)</p>
+      <div class="input">
+        <label for="address">כתובת / עיר</label>
+        <input id="address" type="text" placeholder="למשל: תל אביב" />
+        <div class="help">דוגמה: “חולון”, “בן יהודה 10 תל אביב”</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Screen 3: Radius -->
+  <section id="screen-3" class="screen hide">
+    <div class="card">
+      <h2>לחפש באיזה רדיוס?</h2>
+      <p class="muted">בחר/י כמה קילומטרים מסביב לכתובת.</p>
+      <div class="grid cols-2">
+        <button class="btn chip" data-radius="2">2 ק״מ</button>
+        <button class="btn chip" data-radius="5">5 ק״מ</button>
+        <button class="btn chip" data-radius="10">10 ק״מ</button>
+        <button class="btn chip" data-radius="15">15 ק״מ</button>
+      </div>
+      <div class="input" style="margin-top:12px">
+        <label for="radius">או הזינו ידנית</label>
+        <input id="radius" type="number" min="1" step="0.5" placeholder="למשל: 5" />
+      </div>
+    </div>
+  </section>
+
+  <!-- Screen 4: List -->
+  <section id="screen-4" class="screen hide">
+    <div class="card">
+      <h2>מה תרצה לקנות?</h2>
+      <p class="muted">כתבו טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</p>
+      <div class="input">
+        <label for="list">רשימת קניות</label>
+        <textarea id="list" rows="5" placeholder="לדוגמה: רצף טקסט חופשי – שישיית מים 1.5 ליטר, 2 חלב 3%, קוקה קולה 2 בקבוקים, ספגטי, 10 פיתות"></textarea>
+        <div class="help">
+          טיפ: ניתן לכתוב גם “חלב שתי קרטונים, קופסת עגבניות מרוסקות 3, פסטה, שמן זית”
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="mt-3 d-flex align-items-center">
-        <button type="submit" class="btn btn-primary">
-          מצא לי את הזול ביותר
-        </button>
-        <div class="spinner-border text-primary ms-3" role="status" id="loading">
-          <span class="visually-hidden">טוען...</span>
-        </div>
+  <!-- Screen 5: Results -->
+  <section id="screen-5" class="screen hide">
+    <div class="card">
+      <h2>התוצאות</h2>
+      <p class="muted">מדורגות מהזול ליקר (לפי ה-LLM). לחץ/י על תוצאה לפרטים.</p>
+
+      <div id="results" class="list" style="margin-top:12px"></div>
+
+      <div class="loading" id="loading">
+        <div class="spinner"></div><span>מחפש את העסקה המשתלמת…</span>
       </div>
-    </form>
+    </div>
+  </section>
 
-    <div id="results" class="mt-4"></div>
+  <!-- Sticky CTA -->
+  <div class="cta-bar">
+    <div class="cta-inner">
+      <button id="back" class="btn btn-ghost" type="button">חזרה</button>
+      <button id="next" class="btn btn-primary" type="button">הבא</button>
+    </div>
   </div>
+</div>
 
-  <script>
-    const form = document.getElementById("searchForm");
-    const resultsDiv = document.getElementById("results");
-    const spinner = document.getElementById("loading");
+<script>
+  // ניווט בין 5 מסכים
+  const screens = [
+    document.getElementById('screen-1'),
+    document.getElementById('screen-2'),
+    document.getElementById('screen-3'),
+    document.getElementById('screen-4'),
+    document.getElementById('screen-5')
+  ];
+  let step = 0;
 
-    function esc(s) {
-      return String(s ?? "").replace(/[&<>"'`=\/]/g, (c) => ({
-        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"
-      }[c]));
+  const btnNext = document.getElementById('next');
+  const btnBack = document.getElementById('back');
+
+  const addressEl = document.getElementById('address');
+  const radiusEl = document.getElementById('radius');
+  const listEl = document.getElementById('list');
+
+  const resultsEl = document.getElementById('results');
+  const loadingEl = document.getElementById('loading');
+
+  // בחירת רדיוס מהצ'יפים
+  document.querySelectorAll('[data-radius]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      radiusEl.value = b.getAttribute('data-radius');
+      // הקפצה מיידית לשלב הבא
+      goto(step+1);
+    });
+  });
+
+  function goto(n){
+    step = Math.max(0, Math.min(4, n));
+    screens.forEach((s,i)=> s.classList.toggle('hide', i!==step));
+    // טקסט כפתורים
+    btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
+    btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
+  }
+  goto(0);
+
+  btnBack.addEventListener('click', ()=>{
+    if(step===0){ window.history.length>1 ? history.back() : null; return; }
+    goto(step-1);
+  });
+
+  btnNext.addEventListener('click', async ()=>{
+    // ולידציה קטנה לכל שלב
+    if(step===1 && !addressEl.value.trim()){
+      shake(addressEl); return;
+    }
+    if(step===2 && !radiusEl.value){
+      shake(radiusEl); return;
+    }
+    if(step===3 && !listEl.value.trim()){
+      shake(listEl); return;
     }
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      resultsDiv.innerHTML = "";
-      spinner.style.display = "inline-block";
+    if(step<4){ goto(step+1); return; }
 
-      const address = document.getElementById("address").value.trim();
-      const radius = parseFloat(document.getElementById("radius").value);
-      const listText = document.getElementById("shoppingList").value.trim();
+    // שלב 5: קריאה לשרת
+    resultsEl.innerHTML = '';
+    loadingEl.classList.add('show');
 
-      try {
-        const resp = await fetch("/api/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            address,
-            radius_km: radius,
-            list_text: listText // 👈 שולחים טקסט חופשי. ה-LLM עושה הכל.
-          })
-        });
+    const payload = {
+      address: addressEl.value.trim(),
+      radius_km: Number(radiusEl.value || 5),
+      list_text: listEl.value.trim()
+    };
 
-        const data = await resp.json();
-        spinner.style.display = "none";
+    try{
+      const res = await fetch('/api/search', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      loadingEl.classList.remove('show');
 
-        if (!resp.ok) {
-          resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאת שרת (${resp.status}): ${esc(data.message || "לא ידוע")}</div>`;
-          return;
-        }
-
-        if (data.status === "ok") {
-          if (!Array.isArray(data.results) || data.results.length === 0) {
-            resultsDiv.innerHTML = `<div class="alert alert-info">לא נמצאו תוצאות.</div>`;
-            return;
-          }
-
-          // מציגים את התוצאות בדיוק לפי הסדר שה-LLM החזיר (אמור להיות מהזול ליקר)
-          let html = "";
-          data.results.forEach(r => {
-            const currency = esc(r.currency || "₪");
-            const mo = (r.match_overall != null && !Number.isNaN(r.match_overall))
-              ? `${Math.round(Number(r.match_overall) * 100)}%`
-              : "—";
-
-            const basketRows = Array.isArray(r.basket) ? r.basket.map(b => {
-              const subBadge = b.substitution ? ' <span class="badge badge-sub rounded-pill">תחליף</span>' : '';
-              const conf = (b.match_confidence != null && !Number.isNaN(b.match_confidence))
-                ? `${Math.round(Number(b.match_confidence) * 100)}%` : "—";
-              const unit = Number(b.unit_price || 0);
-              const line = Number(b.line_total || 0);
-              return `
-                <tr>
-                  <td>${esc(b.name)}${subBadge}</td>
-                  <td>${esc(b.quantity)}</td>
-                  <td>${unit.toFixed(2)}</td>
-                  <td>${line.toFixed(2)}</td>
-                  <td>${conf}</td>
-                </tr>`;
-            }).join("") : "";
-
-            html += `
-              <div class="card mb-3 shadow-sm">
-                <div class="card-body">
-                  <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                      <h5 class="card-title mb-1">#${esc(r.rank)} — ${esc(r.store_name)}</h5>
-                      <div class="text-muted small">
-                        ${esc(r.address)} | מרחק: ${esc(r.distance_km)} ק״מ | דיוק כללי: ${mo}
-                      </div>
-                    </div>
-                    <div class="text-end">
-                      <div class="h5 mb-0">סה״כ: ${Number(r.total_price || 0).toFixed(2)} ${currency}</div>
-                      <div class="small text-muted">(מהזול ליקר — לפי ה-LLM)</div>
-                    </div>
-                  </div>
-
-                  <div class="table-responsive mt-3">
-                    <table class="table table-sm align-middle">
-                      <thead>
-                        <tr class="table-light">
-                          <th>מוצר</th>
-                          <th>כמות</th>
-                          <th>מחיר יחידה</th>
-                          <th>סך הכל</th>
-                          <th>דיוק</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${basketRows}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>`;
-          });
-
-          resultsDiv.innerHTML = html;
-
-        } else if (data.status === "need_input") {
-          const missing = Array.isArray(data.needed) ? data.needed.join(", ") : "";
-          resultsDiv.innerHTML = `<div class="alert alert-warning">חסרים שדות: ${esc(missing)}</div>`;
-        } else if (data.status === "no_results") {
-          resultsDiv.innerHTML = `<div class="alert alert-info">לא נמצאו תוצאות.</div>`;
-        } else {
-          resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאה: ${esc(data.message || "לא ידוע")}</div>`;
-        }
-
-      } catch (err) {
-        spinner.style.display = "none";
-        resultsDiv.innerHTML = `<div class="alert alert-danger">שגיאה בקריאה לשרת: ${esc(err.message)}</div>`;
+      if(!res.ok){
+        resultsEl.innerHTML = `<div class="row" style="border-color:#ffe4e6"><div>שגיאת שרת (${res.status})</div><div style="color:var(--danger)">${esc(data.message||'לא ידוע')}</div></div>`;
+        return;
       }
-    });
-  </script>
-  <!-- Bootstrap JS (אופציונלי לרכיבים מסוימים) -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+      if(data.status==='need_input'){
+        resultsEl.innerHTML = `<div class="row"><div>חסרים שדות</div><div class="badge warn">${esc((data.needed||[]).join(', '))}</div></div>`;
+        return;
+      }
+      if(data.status==='no_results' || !Array.isArray(data.results) || data.results.length===0){
+        resultsEl.innerHTML = `<div class="row"><div>לא נמצאו תוצאות</div><div class="badge">נסו להגדיל רדיוס</div></div>`;
+        return;
+      }
+
+      // מציגים תוצאות כפי שה-LLM החזיר — כבר ממויין מהזול ליקר
+      resultsEl.innerHTML = data.results.map(r=>{
+        const total = Number(r.total_price||0).toFixed(2);
+        const mo = (typeof r.match_overall==='number') ? `${Math.round(r.match_overall*100)}%` : '—';
+        return `
+          <div class="row">
+            <div>
+              <div><strong>#${esc(r.rank)} — ${esc(r.store_name)}</strong></div>
+              <div class="muted" style="font-size:12px">${esc(r.address)} • ${esc(r.distance_km)} ק״מ • דיוק כללי ${mo}</div>
+            </div>
+            <div class="price">${total} ${esc(r.currency||'₪')}</div>
+          </div>
+          <details class="card" style="margin-top:10px">
+            <summary style="cursor:pointer;color:#0369a1">פירוט סל</summary>
+            <div class="list" style="margin-top:10px">
+              ${Array.isArray(r.basket)?r.basket.map(b=>{
+                const conf = (typeof b.match_confidence==='number') ? `${Math.round(b.match_confidence*100)}%`:'—';
+                const unit = Number(b.unit_price||0).toFixed(2);
+                const line = Number(b.line_total||0).toFixed(2);
+                const sub = b.substitution ? '<span class="badge sub">תחליף</span>' : '';
+                const notes = b.notes ? `<div class="muted" style="font-size:12px">${esc(b.notes)}</div>` : '';
+                return `
+                  <div class="row">
+                    <div>
+                      <div><strong>${esc(b.name)}</strong> ${sub}</div>
+                      <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity)} • דיוק: ${conf}</div>
+                      ${notes}
+                    </div>
+                    <div class="price">${line}</div>
+                  </div>`;
+              }).join(''):''}
+            </div>
+          </details>
+        `;
+      }).join('');
+
+    }catch(err){
+      loadingEl.classList.remove('show');
+      resultsEl.innerHTML = `<div class="row" style="border-color:#ffe4e6"><div>שגיאה ברשת</div><div class="muted">${esc(err.message||err)}</div></div>`;
+    }
+  });
+
+  function shake(el){
+    el.style.borderColor = '#fda4af';
+    el.animate([
+      { transform:'translateX(0)' },{ transform:'translateX(-3px)' },
+      { transform:'translateX(3px)' },{ transform:'translateX(0)' }
+    ],{duration:240});
+    setTimeout(()=>el.style.borderColor='#e5e7eb',300);
+  }
+  function esc(s){
+    return String(s??'').replace(/[&<>"'`=\/]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;" }[c]));
+  }
+</script>
 </body>
 </html>
