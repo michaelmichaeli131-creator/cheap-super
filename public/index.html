@@ -47,6 +47,7 @@
     .badge.chip{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;
       box-shadow:0 8px 18px #0b3b6a12; font-weight:700}
     .hero-cta{width:100%; margin-top:.6rem}
+    .hero-ghost{width:100%; margin-top:.6rem}
     .landing-foot{display:flex; justify-content:center; margin-top:2rem}
     .trust{color:#7c8aa0; font-size:12px; display:flex; align-items:center; gap:8px}
     .trust-dot{width:6px;height:6px;border-radius:50%; background:#9aa4b2}
@@ -78,6 +79,7 @@
     .row{display:flex; justify-content:space-between; align-items:center; padding:14px; border-radius:16px; background:#fff; border:1px solid #eaf1fb}
     .row + .row{margin-top:10px}
     .total{font-size:18px; font-weight:900}
+    .list{display:flex; flex-direction:column; gap:10px} /* פירוט סל */
 
     /* CTA sticky */
     .cta{position:fixed; inset-inline:0; bottom:0; background:var(--glass); backdrop-filter:blur(12px);
@@ -119,6 +121,7 @@
         </div>
 
         <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
+        <button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
       </div>
 
       <footer class="landing-foot">
@@ -180,7 +183,7 @@
     </div>
   </section>
 
-  <!-- ===== Screen 5: Results ===== -->
+  <!-- ===== Screen 5: Results (no images, expandable basket) ===== -->
   <section id="s5" class="screen">
     <div class="page">
       <div class="box">
@@ -210,6 +213,7 @@
   const btnBack  = document.getElementById('back');
   const startBtn = document.getElementById('startBtn');
   const howLink  = document.getElementById('howLink');
+  const gpsSoon  = document.getElementById('gpsSoon');
 
   const addressEl = document.getElementById('address');
   const radiusEl  = document.getElementById('radius');
@@ -229,6 +233,7 @@
 
   startBtn?.addEventListener('click', ()=> goto(1));
   howLink?.addEventListener('click', ()=> goto(1));
+  gpsSoon?.addEventListener('click', ()=> alert('שימוש ב-GPS יתווסף בקרוב 😊'));
 
   // radius chips
   document.querySelectorAll('[data-radius]').forEach(b=>{
@@ -285,21 +290,43 @@
         return;
       }
 
-      // Render cards (LLM already sorted cheapest→expensive)
+      // Render rows of stores + expandable basket (no images)
       resultsEl.innerHTML = data.results.map(r=>{
-        const total = Number(r.total_price||0).toFixed(2);
-        const img = r.cover_image || 'img/store_placeholder.jpg';
+        const total = Number(r.total_price || 0).toFixed(2);
+        const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
+
+        const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
+          const conf = (typeof b.match_confidence === 'number') ? `${Math.round(b.match_confidence*100)}%` : '—';
+          const line = Number(b.line_total || 0).toFixed(2);
+          const unit = Number(b.unit_price || 0).toFixed(2);
+          const sub  = b.substitution ? '<span class="badge" style="background:#fffbea;color:#713f12">תחליף</span>' : '';
+          const notes = b.notes ? `<div class="muted" style="font-size:12px">${esc(b.notes)}</div>` : '';
+          const brand = (typeof b.brand === 'string' && b.brand.trim()) ? ` <span class="muted" style="font-size:12px">• ${esc(b.brand)}</span>` : '';
+          return `
+            <div class="row">
+              <div>
+                <div><strong>${esc(b.name)}</strong>${brand} ${sub}</div>
+                <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity)} • מחיר יחידה: ${unit} • דיוק: ${conf}</div>
+                ${notes}
+              </div>
+              <div class="total">${line}</div>
+            </div>`;
+        }).join('') : '';
+
         return `
-          <article class="card" style="min-width:100%;aspect-ratio:10/9">
-            <img src="${esc(img)}" alt="${esc(r.store_name)}"
-                 onerror="this.src='data:image/svg+xml;utf8,<?xml version=&quot;1.0&quot;?><svg xmlns=&quot;http://www.w3.org/2000/svg&quot; width=&quot;600&quot; height=&quot;540&quot;><rect width=&quot;100%&quot; height=&quot;100%&quot; fill=&quot;%23dff1ff&quot;/></svg>'">
-            <div class="shade"></div>
-            <div class="price-tag">${total} ${esc(r.currency||'₪')}</div>
-            <div class="meta">
-              <div class="title">#${esc(r.rank)} — ${esc(r.store_name)}</div>
-              <div class="badge">${esc(r.address)} • ${esc(r.distance_km)} ק״מ</div>
+          <div class="row">
+            <div>
+              <div><strong>#${esc(r.rank)} — ${esc(r.store_name)}</strong></div>
+              <div class="muted" style="font-size:12px">${esc(r.address)} • ${esc(r.distance_km)} ק״מ • דיוק כללי ${mo}</div>
             </div>
-          </article>
+            <div class="total">${total} ${esc(r.currency || '₪')}</div>
+          </div>
+          <details class="box" style="margin-top:10px">
+            <summary style="cursor:pointer;color:#075985">פירוט סל</summary>
+            <div class="list" style="margin-top:10px">
+              ${basketRows}
+            </div>
+          </details>
         `;
       }).join('');
 
