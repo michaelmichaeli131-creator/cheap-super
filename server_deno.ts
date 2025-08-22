@@ -1,185 +1,173 @@
-// server_deno.ts — Deno Deploy: static via serveDir, API via Hono
-// LLM-does-everything mode: server passes free text; model returns 3–4 stores sorted cheapest→expensive.
-import { serveDir } from "jsr:@std/http/file-server";
-import { Hono } from "jsr:@hono/hono";
-import { OpenAI } from "jsr:@openai/openai";
+// server_deno.ts
+// Deno Deploy / Hono + OpenAI Responses API (GPT-5)
 
-type SearchRequest = {
-  address?: string;
-  radius_km?: number;
-  list_text?: string; // טקסט חופשי מהקליינט
-};
+import { Hono } from "https://deno.land/x/hono@v4.4.7/mod.ts";
+import { cors } from "https://deno.land/x/hono@v4.4.7/middleware/cors/index.ts";
+import OpenAI from "npm:openai";
 
-const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
-if (!OPENAI_API_KEY) {
-  console.warn("[WARN] OPENAI_API_KEY is not set. Set it in Deno Deploy → Project → Settings → Environment Variables.");
+// === Env ===
+const API_KEY = Deno.env.get("OPENAI_API_KEY");
+if (!API_KEY) {
+  console.error("Missing OPENAI_API_KEY in environment variables");
 }
-const MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
+const MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5"; // נועל ל-GPT-5 כברירת מחדל
 
-const client = new OpenAI({ apiKey: OPENAI_API_KEY ?? "" });
+// === App ===
 const app = new Hono();
 
-// ---------- API ----------
-app.get("/healthz", (c) => c.json({ ok: true }));
+// CORS (אפשר לכוונן לפי הצורך)
+app.use(
+  "*",
+  cors({
+    origin: "*",
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
-app.post("/api/search", async (c) => {
-  let body: SearchRequest;
+// === OpenAI Client ===
+const client = new OpenAI({ apiKey: API_KEY });
+
+// עוזר קטן: נסה לפרסר JSON בצורה בטוחה
+function safeJsonParse<T = unknown>(text: string): { ok: true; data: T } | { ok: false; error: string } {
   try {
-    body = await c.req.json<SearchRequest>();
-  } catch {
-    return c.json({ status: "error", message: "Invalid JSON body", needed: [], results: [] }, 400);
+    const data = JSON.parse(text);
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || "JSON parse error" };
   }
-
-  const needed: string[] = [];
-  if (!body.address?.trim()) needed.push("address");
-  if (!Number.isFinite(Number(body.radius_km))) needed.push("radius_km");
-  if (!body.list_text?.trim()) needed.push("list_text");
-  if (needed.length) return c.json({ status: "need_input", needed, results: [] }, 400);
-
-  try {
-    const results = await llmEverything(body);
-
-    // קשיחות מינימלית ליתר ביטחון מול סטיות מודל
-    if (!Array.isArray(results.needed)) results.needed = [];
-    if (!Array.isArray(results.results)) results.results = [];
-    for (const r of results.results) {
-      if (!Array.isArray(r.basket)) r.basket = [];
-      for (const b of r.basket) {
-        if (typeof b.match_confidence !== "number") b.match_confidence = 0;
-        if (typeof b.substitution !== "boolean") b.substitution = false;
-        if (typeof b.notes !== "string") b.notes = "";
-      }
-      // עקביות סכום
-      if (Array.isArray(r.basket)) {
-        r.total_price = r.basket.reduce((acc: number, l: any) => acc + Number(l.line_total || 0), 0);
-      }
-    }
-
-    return c.json(results);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[/api/search] error:", message);
-    return c.json({ status: "error", message, needed: [], results: [] }, 500);
-  }
-});
-
-// ---------- Single LLM call that does EVERYTHING ----------
-async function llmEverything(req: SearchRequest) {
-  const instructions = `
-אתה מבצע השוואת סל קניות מקצה לקצה על בסיס טקסט חופשי בעברית.
-קלט: כתובת/עיר, רדיוס בק"מ, וטקסט חופשי עם רשימת קניות (ללא תלות בפסיקים).
-משימות:
-1) הבן את רשימת הפריטים והכמויות מהטקסט החופשי (נרמול שמות, איחוד יחידות, התמודדות עם שגיאות כתיב).
-2) בנה 3–4 אפשרויות של חנויות קרובות (בתוך הרדיוס), כולל תחליפים סבירים (אם צריך) והערכות מחיר סבירות.
-3) החזר את התוצאות **ממוינות מהזול ליקר** והוסף לכל תוצאה שדה rank עוקב שמתחיל ב-1.
-4) עקביות חישובית: line_total = unit_price * quantity; וסכום ה-line_total = total_price.
-5) החזר match_confidence לכל שורת פריט (0..1), ואם זו התאמה לא מדויקת הוסף substitution=true; הוסף notes:string (יכול להיות ריק).
-6) הוסף match_overall (0..1) לכל חנות.
-7) אל תוסיף טקסט חופשי מעבר ל-JSON ולא שדות שלא בסכמה.
-`.trim();
-
-  const payload = {
-    address: req.address,
-    radius_km: Number(req.radius_km),
-    list_text: req.list_text,
-  };
-
-  const response = await client.responses.create({
-    model: MODEL,
-    instructions,
-    input: JSON.stringify(payload),
-    // Structured output (strict) — כל המפתחות מוגדרים ב-required
-    text: {
-      format: {
-        type: "json_schema",
-        name: "SearchResults",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            status: { enum: ["ok", "no_results", "need_input", "error"] },
-            needed: { type: "array", items: { type: "string" } },
-            results: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  rank: { type: "number" },
-                  store_name: { type: "string" },
-                  address: { type: "string" },
-                  distance_km: { type: "number" },
-                  currency: { type: "string" },
-                  total_price: { type: "number" },
-                  match_overall: { type: "number" },
-                  basket: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        name: { type: "string" },
-                        quantity: { type: "number" },
-                        unit_price: { type: "number" },
-                        line_total: { type: "number" },
-                        match_confidence: { type: "number" },
-                        substitution: { type: "boolean" },
-                        notes: { type: "string" }
-                      },
-                      required: [
-                        "name",
-                        "quantity",
-                        "unit_price",
-                        "line_total",
-                        "match_confidence",
-                        "substitution",
-                        "notes"
-                      ],
-                      additionalProperties: false
-                    }
-                  }
-                },
-                required: [
-                  "rank",
-                  "store_name",
-                  "address",
-                  "distance_km",
-                  "currency",
-                  "total_price",
-                  "match_overall",
-                  "basket"
-                ],
-                additionalProperties: false
-              }
-            }
-          },
-          required: ["status", "needed", "results"],
-          additionalProperties: false
-        }
-      }
-    },
-    temperature: 0.15,
-    max_output_tokens: 1600
-  });
-
-  const text =
-    (response as any).output_text ??
-    ((response as any).output?.[0]?.content?.[0]?.type === "output_text"
-      ? (response as any).output[0].content[0].text
-      : undefined);
-  if (!text) throw new Error("LLM returned no text");
-
-  const data = JSON.parse(text);
-  return data;
 }
 
-// ---------- HTTP entry (static + API) ----------
-Deno.serve((req) => {
-  const url = new URL(req.url);
-
-  // API goes to Hono app
-  if (url.pathname.startsWith("/api/") || url.pathname === "/healthz") {
-    return app.fetch(req);
+// עוזר: חילוץ JSON מתוך טקסט (אם המודל עטף בטקסט)
+function extractJsonBlock(s: string): string {
+  // נסה למצוא את הבלוק הראשון שמתחיל ב { ונגמר ב }
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return s.slice(start, end + 1);
   }
+  return s.trim();
+}
 
-  // Everything else: serve ./public with index.html as default
-  return serveDir(req, { fsRoot: "public", urlRoot: "", index: "index.html" });
+// === Route: POST /api/search ===
+// קלט: { address: string, radius_km: number, list_text: string }
+app.post("/api/search", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const address = String(body?.address || "").trim();
+    const radius_km = Number(body?.radius_km || 0);
+    const list_text = String(body?.list_text || "").trim();
+
+    const needed: string[] = [];
+    if (!address) needed.push("address");
+    if (!radius_km || isNaN(radius_km)) needed.push("radius_km");
+    if (!list_text) needed.push("list_text");
+
+    if (needed.length > 0) {
+      return c.json({ status: "need_input", needed }, 400);
+    }
+
+    // Prompt: מבקש JSON בלבד. אין שימוש ב-temperature/top_p (הם לא נתמכים ב-GPT-5 בהקשר הזה).
+    // שים לב: לא משתמשים כאן ב-text.format כדי להימנע משגיאות סכימה — נשמור את זה פשוט ויציב.
+    const system = `
+You are a shopping-comparison assistant. You receive a free-text grocery list in Hebrew (may have no commas),
+a user address/city, and a search radius (km). Return ONLY strict JSON that a browser can JSON.parse.
+
+Rules:
+- Identify 3-4 nearby stores (realistic placeholders allowed if data isn't available).
+- For each store, estimate a detailed basket: items matched to the user's list (allow fuzzy matching; commas optional),
+  include brand if obvious, quantity, unit_price, line_total, optional notes and substitution flag.
+- Sort stores by total_price ascending (cheapest first). Rank starting at 1.
+- Provide match_overall (0..1) as an estimated overall match quality.
+- Use ILS by default ("₪") and distances in kilometers.
+- Output strictly the following JSON shape:
+
+{
+  "status": "ok",
+  "results": [
+    {
+      "rank": 1,
+      "store_name": "string",
+      "address": "string",
+      "distance_km": number,
+      "currency": "₪",
+      "total_price": number,
+      "match_overall": number,
+      "basket": [
+        {
+          "name": "string",
+          "brand": "string | optional",
+          "quantity": number,
+          "unit_price": number,
+          "line_total": number,
+          "match_confidence": number,   // 0..1
+          "substitution": boolean,      // optional
+          "notes": "string | optional"
+        }
+      ]
+    }
+  ]
+}
+Return ONLY JSON. No Markdown, no prose.
+`.trim();
+
+    const user = `
+Address: ${address}
+Radius_km: ${radius_km}
+User list (free text, commas optional): ${list_text}
+`.trim();
+
+    // === OpenAI call ===
+    // ❗️שימו לב: בלי temperature / top_p כדי להימנע מהשגיאה 400 Unsupported parameter.
+    const resp = await client.responses.create({
+      model: MODEL,
+      // אפשר גם להעביר כ־{ role, content } אבל כאן מספיק input פשוט
+      input: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    });
+
+    const rawText = resp.output_text ?? ""; // SDK מחזיר text מאוחד בנוחות
+    const jsonCandidate = extractJsonBlock(rawText);
+    const parsed = safeJsonParse<any>(jsonCandidate);
+
+    if (!parsed.ok) {
+      // אם לא הצלחנו לפרסר, נחזיר הודעת שגיאה ידידותית + את הטקסט הגולמי כדי שתוכל לדבג
+      return c.json(
+        {
+          status: "error",
+          message: "LLM returned non-JSON or invalid JSON",
+          details: parsed.error,
+          raw: rawText,
+        },
+        502,
+      );
+    }
+
+    // וליתר ביטחון: נוודא שהמבנה מתאים למה שהלקוח מצפה לו
+    const data = parsed.data;
+    if (data?.status !== "ok" || !Array.isArray(data?.results)) {
+      return c.json(
+        {
+          status: "no_results",
+          message: "Unexpected shape from LLM",
+          raw: data,
+        },
+        200,
+      );
+    }
+
+    // או.קיי — זה הפורמט שהלקוח מצפה אליו
+    return c.json({ status: "ok", results: data.results }, 200);
+  } catch (err) {
+    console.error(err);
+    return c.json({ status: "error", message: String(err) }, 500);
+  }
 });
+
+// Root (אופציונלי)
+app.get("/", (c) => c.text("CartCompare AI server (GPT-5) is up."));
+
+// Deno Deploy export
+export default app;
