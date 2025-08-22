@@ -1,28 +1,28 @@
 // server_deno.ts
-// Deno Deploy + Hono (from npm) + OpenAI Responses API (GPT-5)
+// Deno Deploy + Hono (npm) + OpenAI (GPT-5) + Static public/
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
+import { serveStatic } from "npm:hono/serve-static";
 import OpenAI from "npm:openai";
 
 // === Env ===
 const API_KEY = Deno.env.get("OPENAI_API_KEY");
-if (!API_KEY) {
-  console.error("Missing OPENAI_API_KEY in environment variables");
-}
-const MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5"; // נועל ל-GPT-5 כברירת מחדל
+if (!API_KEY) console.error("Missing OPENAI_API_KEY");
+const MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
 
 // === App ===
 const app = new Hono();
-app.use("*", cors({ origin: "*", allowMethods: ["GET","POST","OPTIONS"], allowHeaders: ["Content-Type","Authorization"] }));
 
-// === OpenAI client ===
+// CORS ל-API בלבד (לא חובה לסטטי)
+app.use("/api/*", cors({ origin: "*", allowMethods: ["GET","POST","OPTIONS"], allowHeaders: ["Content-Type","Authorization"] }));
+
+// OpenAI client
 const client = new OpenAI({ apiKey: API_KEY });
 
 // עוזרים קטנים
 function extractJsonBlock(s: string): string {
-  const start = s.indexOf("{");
-  const end = s.lastIndexOf("}");
+  const start = s.indexOf("{"); const end = s.lastIndexOf("}");
   return (start >= 0 && end > start) ? s.slice(start, end + 1) : s.trim();
 }
 function safeParse<T = unknown>(t: string): { ok: true; data: T } | { ok: false; error: string } {
@@ -30,14 +30,11 @@ function safeParse<T = unknown>(t: string): { ok: true; data: T } | { ok: false;
   catch (e) { return { ok: false, error: (e as Error).message || "JSON parse error" }; }
 }
 
-// בריאות
-app.get("/", (c) => c.text("CartCompare AI server (GPT-5) is running."));
-
-// ===== /api/search =====
+// ===== API =====
 app.post("/api/search", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const address   = String(body?.address ?? "").trim();
+    const address = String(body?.address ?? "").trim();
     const radius_km = Number(body?.radius_km ?? 0);
     const list_text = String(body?.list_text ?? "").trim();
 
@@ -49,8 +46,8 @@ app.post("/api/search", async (c) => {
 
     const system = `
 You are a shopping-comparison assistant. Return ONLY strict JSON that can be JSON.parsed.
-Identify ~3 nearby stores (placeholders allowed), match the user's free-text list (commas may be missing),
-allow fuzzy matching and substitutions, include brand when obvious, and sort stores cheapest→expensive.
+Identify ~3 nearby stores (placeholders allowed), fuzzy-match the user's free-text list (commas may be missing),
+include brand when obvious, allow substitutions, sort stores cheapest→expensive. Use ILS (₪).
 
 JSON shape EXACTLY:
 {
@@ -72,7 +69,7 @@ JSON shape EXACTLY:
           "unit_price": number,
           "line_total": number,
           "match_confidence": number,
-          "substitution": boolean (optional),
+          "substitution": boolean (optional)",
           "notes": "string (optional)"
         }
       ]
@@ -88,9 +85,8 @@ Radius_km: ${radius_km}
 User list (free text, commas optional): ${list_text}
 `.trim();
 
-    // ❗ בלי temperature/top_p — לא נתמך ב-GPT-5
     const ai = await client.responses.create({
-      model: MODEL,
+      model: MODEL, // בלי temperature/top_p
       input: [
         { role: "system", content: system },
         { role: "user",   content: user   },
@@ -100,9 +96,8 @@ User list (free text, commas optional): ${list_text}
     const raw = ai.output_text ?? "";
     const jsonText = extractJsonBlock(raw);
     const parsed = safeParse<any>(jsonText);
-    if (!parsed.ok) {
-      return c.json({ status: "error", message: "LLM returned invalid JSON", details: parsed.error, raw }, 502);
-    }
+    if (!parsed.ok) return c.json({ status: "error", message: "LLM returned invalid JSON", details: parsed.error, raw }, 502);
+
     const data = parsed.data;
     if (data?.status !== "ok" || !Array.isArray(data?.results)) {
       return c.json({ status: "no_results", message: "Unexpected shape from LLM", raw: data }, 200);
@@ -113,5 +108,17 @@ User list (free text, commas optional): ${list_text}
     return c.json({ status: "error", message: String(err) }, 500);
   }
 });
+
+// ===== Static frontend from /public =====
+// משרת קבצים סטטיים (CSS/JS/תמונות וכד')
+app.use("/assets/*", serveStatic({ root: "./public" }));
+app.use("/img/*",    serveStatic({ root: "./public" }));
+app.use("/public/*", serveStatic({ root: "./public" }));
+
+// דף הבית – מגיש index.html
+app.get("/", serveStatic({ path: "./public/index.html" }));
+
+// SPA fallback – כל נתיב שלא נמצא יגיש index.html
+app.notFound(serveStatic({ path: "./public/index.html" }));
 
 export default app;
