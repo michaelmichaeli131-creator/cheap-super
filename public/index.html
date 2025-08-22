@@ -4,79 +4,145 @@
   <meta charset="utf-8" />
   <title>השוואת סל קניות AI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- עיצוב תכלת-לבן בסגנון Wolt, מותאם מובייל -->
+  <!-- ======= MODERN WOLT-STYLE THEME ======= -->
   <style>
     :root{
-      --bg:#f6fbff;
-      --card:#ffffff;
-      --brand:#2fb6ff;
+      /* Palette */
+      --bg: #f6fbff;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #667085;
+      --brand: #2fb6ff;
       --brand-600:#15a8f6;
-      --ink:#0f172a;
-      --muted:#6b7280;
-      --ok:#10b981;
-      --warn:#f59e0b;
-      --danger:#ef4444;
-      --radius:18px;
-      --shadow:0 10px 30px rgba(16, 24, 40, .08);
+      --brand-700:#0f94db;
+      --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
+
+      /* Effects & Radii */
+      --radius-lg: 20px;
+      --radius: 16px;
+      --shadow-lg: 0 18px 55px rgba(12,40,80,.12);
+      --shadow:   0 10px 30px rgba(16, 24, 40, .08);
+
+      /* Typography (fluid) */
+      --fs-hero: clamp(22px, 4.5vw, 28px);
+      --fs-h2:   clamp(18px, 3.8vw, 22px);
+      --fs-body: 16px;
+
+      /* Motion */
+      --ease: cubic-bezier(.2,.8,.2,1);
+      --speed: .28s;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root{
+        --bg:#0b1220; --card:#0f1628cc; --ink:#eff6ff; --muted:#9aa4b2;
+        --shadow: 0 10px 30px rgba(0,0,0,.35);
+        --shadow-lg: 0 18px 55px rgba(0,0,0,.5);
+      }
+      .glass{ backdrop-filter: blur(14px) saturate(125%); }
+      .row{ background: #111a2f; border-color: #1a2745; }
     }
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-    .app{max-width:440px;margin:0 auto;min-height:100%;display:flex;flex-direction:column}
-    header{padding:16px 20px;background:linear-gradient(180deg,#e9f7ff,transparent)}
+    body{accent-color:var(--brand)}
+    .app{max-width:440px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;position:relative;overflow:hidden}
+
+    /* Background blobs */
+    .bg-blob{
+      position:absolute; inset: -10% -30% auto auto; width:70%; aspect-ratio:1/1;
+      background: radial-gradient(60% 60% at 50% 50%, #e8f6ff 0%, #dff2ff 45%, transparent 60%);
+      filter: blur(10px); pointer-events:none; z-index:0;
+    }
+    .bg-blob.b2{ inset:auto auto -25% -35%; width:90%; transform:rotate(8deg); }
+
+    header{padding:16px 20px; position:relative; z-index:1}
     .brand{display:flex;align-items:center;gap:12px}
-    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#76d2ff,#2fb6ff)}
-    .brand h1{font-size:20px;margin:0}
-    .brand small{display:block;color:var(--muted);font-weight:500}
-    .screen{padding:18px 16px 96px}
-    .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}
-    h2{margin:0 0 10px}
-    p.muted{margin:6px 0 0;color:var(--muted)}
-    .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px}
-    .hero .art{width:180px;height:180px;border-radius:28px;background:linear-gradient(135deg,#e8f6ff,#dff2ff);display:grid;place-items:center;box-shadow:var(--shadow)}
-    .pill{display:inline-flex;align-items:center;gap:6px;background:#e8f6ff;color:#0369a1;border-radius:999px;padding:6px 12px;font-size:12px}
+    .logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#76d2ff,#2fb6ff); box-shadow:inset 0 -6px 10px #2fb6ff55, 0 6px 14px #2fb6ff33}
+    .brand h1{font-size:18px;margin:0;line-height:1.1}
+    .brand small{display:block;color:var(--muted);font-weight:600}
+
+    .screen{padding:20px 16px 108px; position:relative; z-index:1; opacity:0; transform:translateY(10px);
+      transition: opacity var(--speed) var(--ease), transform var(--speed) var(--ease)}
+    .screen.active{opacity:1; transform:none}
+    .card{background:var(--card);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:18px}
+    .glass{background:linear-gradient(180deg,#ffffffbb,#ffffff90);border:1px solid #e9eef5; }
+
+    h2{margin:0 0 10px; font-size:var(--fs-h2)}
+    p.muted{margin:6px 0 0;color:var(--muted); font-size:var(--fs-body)}
+
+    /* Hero */
+    .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;padding:22px}
+    .hero .art{width:190px;height:190px;border-radius:28px;background:linear-gradient(135deg,#e8f6ff,#dff2ff);display:grid;place-items:center;box-shadow:var(--shadow)}
+    .pill{display:inline-flex;align-items:center;gap:6px;background:#e8f6ff;color:#0369a1;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:700}
+
     .input{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-    .input label{font-weight:600}
+    .input label{font-weight:700}
     .input input,.input textarea,.input select{
-      width:100%;padding:14px 14px;border-radius:14px;border:1px solid #e5e7eb;background:#fff;font-size:16px;outline:none
+      width:100%;padding:14px;border-radius:16px;border:1px solid #dfe6ee;background:#fff;color:var(--ink);font-size:16px;outline:none;
+      transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease), transform var(--speed) var(--ease);
+    }
+    .input input:focus,.input textarea:focus,.input select:focus{
+      border-color:var(--brand); box-shadow:0 0 0 6px #2fb6ff22; transform: translateY(-1px);
     }
     .help{font-size:12px;color:var(--muted)}
+
+    /* Chips */
     .grid{display:grid;gap:12px}
     .grid.cols-2{grid-template-columns:1fr 1fr}
+    .chip{
+      background:#eef7ff; color:#0369a1; border:none; border-radius:999px; padding:12px; font-weight:700; cursor:pointer;
+      transition: transform var(--speed) var(--ease), background var(--speed) var(--ease);
+    }
+    .chip:active{ transform: translateY(1px) }
+    .chip[data-active="1"]{ background:#cfeeff }
+
+    /* CTA bar */
     .cta-bar{
-      position:fixed;inset-inline:0;bottom:0;background:#ffffffcc;
-      backdrop-filter:blur(10px);box-shadow:0 -8px 30px rgba(16,24,40,.08)
+      position:fixed;inset-inline:0;bottom:0;background:linear-gradient(180deg, #ffffffc8, #ffffffee);
+      backdrop-filter: blur(12px); border-top:1px solid #e9eef5; box-shadow:0 -10px 30px rgba(16,24,40,.08); z-index:2;
     }
     .cta-inner{max-width:440px;margin:0 auto;padding:12px 16px;display:flex;gap:10px}
-    button.btn{
-      appearance:none;border:none;border-radius:14px;padding:14px 18px;font-size:16px;font-weight:700;cursor:pointer
-    }
-    .btn-primary{background:var(--brand);color:#fff}
-    .btn-primary:active{transform:translateY(1px)}
-    .btn-ghost{background:#e7f6ff;color:#0369a1;font-weight:700}
-    .btn-link{background:transparent;color:#0369a1;text-decoration:underline;padding:0 2px}
-    .chips{display:flex;gap:8px;flex-wrap:wrap}
-    .chip{padding:10px 12px;border-radius:999px;background:#eef6ff;color:#0369a1;font-weight:600;font-size:14px}
+    button.btn{appearance:none;border:none;border-radius:16px;padding:14px 18px;font-size:16px;font-weight:800;cursor:pointer;transition: transform var(--speed) var(--ease), box-shadow var(--speed) var(--ease) }
+    .btn-primary{background:var(--brand);color:#fff; box-shadow:0 10px 20px #2fb6ff40}
+    .btn-primary:hover{ transform: translateY(-1px); box-shadow:0 12px 26px #2fb6ff50 }
+    .btn-primary:active{ transform: translateY(0) }
+    .btn-ghost{background:#e7f6ff;color:#0369a1;font-weight:800}
+
+    /* List + rows */
     .list{display:flex;flex-direction:column;gap:12px}
-    .row{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:14px;padding:12px 14px;border:1px solid #eef2f7}
-    .price{font-weight:800}
+    .row{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:16px;padding:14px;border:1px solid #eef2f7}
+    .price{font-weight:900}
     .badge{padding:6px 10px;border-radius:999px;font-size:11px}
     .badge.ok{background:#ecfdf5;color:#065f46}
     .badge.warn{background:#fff7ed;color:#92400e}
     .badge.sub{background:#fffbea;color:#713f12}
+
+    /* Skeleton loader */
+    .skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
+    .skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent, #ffffff66, transparent);animation:shimmer 1.4s infinite}
+    @keyframes shimmer{100%{transform:translateX(100%)}}
+
+    /* Spinner (fallback) */
     .loading{display:none;gap:8px;align-items:center}
     .loading.show{display:flex}
     .spinner{width:18px;height:18px;border:3px solid #cfefff;border-top-color:#2fb6ff;border-radius:50%;animation:spin 1s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
-    /* RTL tweaks */
+
+    /* RTL */
     [dir="rtl"] .row > *:last-child{text-align:left}
+
+    /* Utils */
+    .mt-12{margin-top:12px}
     .hide{display:none}
   </style>
 </head>
 <body>
 <div class="app">
+  <!-- Background accents -->
+  <div class="bg-blob"></div><div class="bg-blob b2"></div>
+
   <header>
     <div class="brand">
-      <div class="logo"></div>
+      <div class="logo" aria-hidden="true"></div>
       <div>
         <h1>השוואת סל קניות <small>AI</small></h1>
         <small>מוצא לך את הזול במהירות</small>
@@ -85,32 +151,37 @@
   </header>
 
   <!-- Screen 1: Landing -->
-  <section id="screen-1" class="screen">
-    <div class="card hero">
-      <div class="art">
-        <!-- לוגו/איור SVG אינליין -->
-        <svg width="120" height="120" viewBox="0 0 200 200" fill="none">
+  <section id="screen-1" class="screen active">
+    <div class="card glass hero">
+      <div class="art" aria-hidden="true">
+        <!-- Simple cart + AI chip SVG -->
+        <svg width="120" height="120" viewBox="0 0 200 200" fill="none" aria-hidden="true">
           <defs>
             <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#76d2ff"/>
-              <stop offset="1" stop-color="#2fb6ff"/>
+              <stop offset="0" stop-color="#76d2ff"/><stop offset="1" stop-color="#2fb6ff"/>
             </linearGradient>
           </defs>
-          <rect x="20" y="50" width="160" height="90" rx="16" fill="url(#g1)"/>
-          <circle cx="70" cy="150" r="12" fill="#fff"/>
-          <circle cx="140" cy="150" r="12" fill="#fff"/>
-          <path d="M40 60 L60 30" stroke="#2fb6ff" stroke-width="10" stroke-linecap="round"/>
+          <rect x="20" y="52" width="160" height="86" rx="16" fill="url(#g1)"/>
+          <circle cx="70" cy="148" r="12" fill="#fff"/><circle cx="140" cy="148" r="12" fill="#fff"/>
+          <rect x="120" y="24" width="40" height="24" rx="6" fill="#e7f6ff" stroke="#2fb6ff"/>
+          <path d="M126 30h28v12h-28z" fill="#2fb6ff"/>
         </svg>
       </div>
-      <div class="pill">חכם • מהיר • משתלם</div>
-      <h2>בואו נתחיל</h2>
+      <span class="pill">
+        <!-- AI icon -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#0369a1" aria-hidden="true">
+          <path d="M12 2a6 6 0 0 0-6 6v8a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4V8a6 6 0 0 0-6-6zm-1 7h2v6h-2V9zm-3 2h2v4H8v-4zm8 0v4h-2v-4h2z"/>
+        </svg>
+        חכם • מהיר • משתלם
+      </span>
+      <h2 style="font-size:var(--fs-hero)">בואו נתחיל</h2>
       <p class="muted">נמצא עבורך את הסופר הזול באזור שלך תוך דקות, בלי להתאמץ.</p>
     </div>
   </section>
 
   <!-- Screen 2: Address -->
-  <section id="screen-2" class="screen hide">
-    <div class="card">
+  <section id="screen-2" class="screen">
+    <div class="card glass">
       <h2>מה הכתובת שלך?</h2>
       <p class="muted">אפשר לכתוב עיר/רחוב. (בעתיד: שיתוף GPS)</p>
       <div class="input">
@@ -122,15 +193,15 @@
   </section>
 
   <!-- Screen 3: Radius -->
-  <section id="screen-3" class="screen hide">
+  <section id="screen-3" class="screen">
     <div class="card">
       <h2>לחפש באיזה רדיוס?</h2>
       <p class="muted">בחר/י כמה קילומטרים מסביב לכתובת.</p>
-      <div class="grid cols-2">
-        <button class="btn chip" data-radius="2">2 ק״מ</button>
-        <button class="btn chip" data-radius="5">5 ק״מ</button>
-        <button class="btn chip" data-radius="10">10 ק״מ</button>
-        <button class="btn chip" data-radius="15">15 ק״מ</button>
+      <div class="grid cols-2 mt-12">
+        <button class="chip" type="button" data-radius="2">2 ק״מ</button>
+        <button class="chip" type="button" data-radius="5">5 ק״מ</button>
+        <button class="chip" type="button" data-radius="10">10 ק״מ</button>
+        <button class="chip" type="button" data-radius="15">15 ק״מ</button>
       </div>
       <div class="input" style="margin-top:12px">
         <label for="radius">או הזינו ידנית</label>
@@ -140,30 +211,28 @@
   </section>
 
   <!-- Screen 4: List -->
-  <section id="screen-4" class="screen hide">
+  <section id="screen-4" class="screen">
     <div class="card">
       <h2>מה תרצה לקנות?</h2>
       <p class="muted">כתבו טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</p>
       <div class="input">
         <label for="list">רשימת קניות</label>
-        <textarea id="list" rows="5" placeholder="לדוגמה: רצף טקסט חופשי – שישיית מים 1.5 ליטר, 2 חלב 3%, קוקה קולה 2 בקבוקים, ספגטי, 10 פיתות"></textarea>
-        <div class="help">
-          טיפ: ניתן לכתוב גם “חלב שתי קרטונים, קופסת עגבניות מרוסקות 3, פסטה, שמן זית”
-        </div>
+        <textarea id="list" rows="5" placeholder="לדוגמה: שישיית מים 1.5 ליטר, 2 חלב 3%, קוקה קולה 2 בקבוקים, ספגטי, 10 פיתות"></textarea>
+        <div class="help">אפשר גם “חלב שתי קרטונים, קופסת עגבניות מרוסקות 3, פסטה, שמן זית”.</div>
       </div>
     </div>
   </section>
 
   <!-- Screen 5: Results -->
-  <section id="screen-5" class="screen hide">
+  <section id="screen-5" class="screen">
     <div class="card">
       <h2>התוצאות</h2>
-      <p class="muted">מדורגות מהזול ליקר (לפי ה-LLM). לחץ/י על תוצאה לפרטים.</p>
+      <p class="muted">מדורגות מהזול ליקר (לפי ה-LLM). לחץ/י תוצאה לפרטים.</p>
 
-      <div id="results" class="list" style="margin-top:12px"></div>
+      <div id="results" class="list mt-12"></div>
 
       <div class="loading" id="loading">
-        <div class="spinner"></div><span>מחפש את העסקה המשתלמת…</span>
+        <div class="spinner" aria-hidden="true"></div><span>מחפש את העסקה המשתלמת…</span>
       </div>
     </div>
   </section>
@@ -177,8 +246,8 @@
   </div>
 </div>
 
+<!-- ======= APP LOGIC ======= -->
 <script>
-  // ניווט בין 5 מסכים
   const screens = [
     document.getElementById('screen-1'),
     document.getElementById('screen-2'),
@@ -198,19 +267,23 @@
   const resultsEl = document.getElementById('results');
   const loadingEl = document.getElementById('loading');
 
-  // בחירת רדיוס מהצ'יפים
+  // highlight chosen radius chip
   document.querySelectorAll('[data-radius]').forEach(b=>{
     b.addEventListener('click', ()=>{
+      document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
+      b.dataset.active="1";
       radiusEl.value = b.getAttribute('data-radius');
-      // הקפצה מיידית לשלב הבא
       goto(step+1);
     });
   });
 
   function goto(n){
     step = Math.max(0, Math.min(4, n));
-    screens.forEach((s,i)=> s.classList.toggle('hide', i!==step));
-    // טקסט כפתורים
+    screens.forEach((s,i)=>{
+      const on = (i===step);
+      s.classList.toggle('active', on);
+      s.classList.toggle('hide', !on);
+    });
     btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
     btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
   }
@@ -222,21 +295,15 @@
   });
 
   btnNext.addEventListener('click', async ()=>{
-    // ולידציה קטנה לכל שלב
-    if(step===1 && !addressEl.value.trim()){
-      shake(addressEl); return;
-    }
-    if(step===2 && !radiusEl.value){
-      shake(radiusEl); return;
-    }
-    if(step===3 && !listEl.value.trim()){
-      shake(listEl); return;
-    }
+    // tiny validation per step
+    if(step===1 && !addressEl.value.trim()){ shake(addressEl); return; }
+    if(step===2 && !radiusEl.value){ shake(radiusEl); return; }
+    if(step===3 && !listEl.value.trim()){ shake(listEl); return; }
 
     if(step<4){ goto(step+1); return; }
 
-    // שלב 5: קריאה לשרת
-    resultsEl.innerHTML = '';
+    // Step 5: call server
+    renderSkeleton();
     loadingEl.classList.add('show');
 
     const payload = {
@@ -255,20 +322,20 @@
       loadingEl.classList.remove('show');
 
       if(!res.ok){
-        resultsEl.innerHTML = `<div class="row" style="border-color:#ffe4e6"><div>שגיאת שרת (${res.status})</div><div style="color:var(--danger)">${esc(data.message||'לא ידוע')}</div></div>`;
+        resultsEl.innerHTML = rowError(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
         return;
       }
 
       if(data.status==='need_input'){
-        resultsEl.innerHTML = `<div class="row"><div>חסרים שדות</div><div class="badge warn">${esc((data.needed||[]).join(', '))}</div></div>`;
+        resultsEl.innerHTML = rowWarn('חסרים שדות', (data.needed||[]).join(', '));
         return;
       }
       if(data.status==='no_results' || !Array.isArray(data.results) || data.results.length===0){
-        resultsEl.innerHTML = `<div class="row"><div>לא נמצאו תוצאות</div><div class="badge">נסו להגדיל רדיוס</div></div>`;
+        resultsEl.innerHTML = rowInfo('לא נמצאו תוצאות', 'נסו להגדיל רדיוס או לשנות ניסוח');
         return;
       }
 
-      // מציגים תוצאות כפי שה-LLM החזיר — כבר ממויין מהזול ליקר
+      // Render results exactly as returned (LLM sorts cheapest→expensive)
       resultsEl.innerHTML = data.results.map(r=>{
         const total = Number(r.total_price||0).toFixed(2);
         const mo = (typeof r.match_overall==='number') ? `${Math.round(r.match_overall*100)}%` : '—';
@@ -306,17 +373,33 @@
 
     }catch(err){
       loadingEl.classList.remove('show');
-      resultsEl.innerHTML = `<div class="row" style="border-color:#ffe4e6"><div>שגיאה ברשת</div><div class="muted">${esc(err.message||err)}</div></div>`;
+      resultsEl.innerHTML = rowError('שגיאה ברשת', err.message || String(err));
     }
   });
 
+  // Skeleton rows (nice shimmer)
+  function renderSkeleton(){
+    resultsEl.innerHTML = `
+      <div class="skeleton" style="height:64px"></div>
+      <div class="skeleton mt-12" style="height:64px"></div>
+      <div class="skeleton mt-12" style="height:64px"></div>
+    `;
+  }
+
+  // Small helpers
+  function rowError(title, msg){
+    return `<div class="row" style="border-color:#ffe4e6"><div>${esc(title)}</div><div style="color:var(--danger)">${esc(msg)}</div></div>`;
+  }
+  function rowWarn(title, msg){
+    return `<div class="row"><div>${esc(title)}</div><div class="badge warn">${esc(msg)}</div></div>`;
+  }
+  function rowInfo(title, msg){
+    return `<div class="row"><div>${esc(title)}</div><div class="muted" style="font-size:12px">${esc(msg)}</div></div>`;
+  }
   function shake(el){
     el.style.borderColor = '#fda4af';
-    el.animate([
-      { transform:'translateX(0)' },{ transform:'translateX(-3px)' },
-      { transform:'translateX(3px)' },{ transform:'translateX(0)' }
-    ],{duration:240});
-    setTimeout(()=>el.style.borderColor='#e5e7eb',300);
+    el.animate([{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],{duration:260});
+    setTimeout(()=>el.style.borderColor='#dfe6ee',320);
   }
   function esc(s){
     return String(s??'').replace(/[&<>"'`=\/]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;" }[c]));
