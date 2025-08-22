@@ -14,7 +14,14 @@ const MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
 const app = new Hono();
 
 // CORS ל-API בלבד
-app.use("/api/*", cors({ origin: "*", allowMethods: ["GET","POST","OPTIONS"], allowHeaders: ["Content-Type","Authorization"] }));
+app.use(
+  "/api/*",
+  cors({
+    origin: "*",
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
 // ========= OpenAI =========
 const client = new OpenAI({ apiKey: API_KEY });
@@ -90,7 +97,7 @@ Radius_km: ${radius_km}
 User list (free text, commas optional): ${list_text}
 `.trim();
 
-    // ❗ בלי temperature/top_p — לא נתמך ב-GPT-5
+    // ❗️ללא temperature/top_p — לא נתמך ב-GPT-5
     const ai = await client.responses.create({
       model: MODEL,
       input: [
@@ -119,12 +126,10 @@ User list (free text, commas optional): ${list_text}
 });
 
 // ========= Static frontend =========
-// הגשה סטטית של public/*
 app.use("/assets/*", serveStatic({ root: "./public" }));
 app.use("/img/*",    serveStatic({ root: "./public" }));
 app.use("/public/*", serveStatic({ root: "./public" }));
 
-// ROOT: נסה לקרוא index.html מהדיסק, ואם אין – החזר fallback מובנה בזיכרון
 app.get("/", async (c) => {
   try {
     const html = await Deno.readTextFile("./public/index.html");
@@ -134,7 +139,6 @@ app.get("/", async (c) => {
   }
 });
 
-// SPA fallback: אם נתיב לא נמצא, החזר index.html (או fallback)
 app.notFound(async (c) => {
   try {
     const html = await Deno.readTextFile("./public/index.html");
@@ -147,7 +151,6 @@ app.notFound(async (c) => {
 export default app;
 
 // ========= Fallback inline HTML =========
-// אם public/index.html לא נארז בדיפלוי — עדיין תראה את ה-UI המינימלי, שדוחף בקשה ל-/api/search
 const FALLBACK_HTML = `<!doctype html>
 <html lang="he" dir="rtl">
 <meta charset="utf-8">
@@ -196,6 +199,11 @@ async function go(){
     }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
-function escapeHtml(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
+function escapeHtml(s){
+  // הוסר ה-backtick מהרגקס כדי לא לשבור את ה-Template Literal החיצוני
+  return String(s??'').replace(/[&<>"'\/]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c];
+  });
+}
 </script>
 </html>`;
