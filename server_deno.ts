@@ -1,5 +1,5 @@
 // server_deno.ts
-// Deno Deploy + Hono (npm) + OpenAI (GPT-5) + Static public/ + Fallback inline
+// Deno Deploy + Hono (npm) + OpenAI (GPT-5) + Static public + Brand-Enforced + Auto Fix Pass
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -35,6 +35,16 @@ function safeParse<T = unknown>(t: string): { ok: true; data: T } | { ok: false;
   try { return { ok: true, data: JSON.parse(t) as T }; }
   catch (e) { return { ok: false, error: (e as Error).message || "JSON parse error" }; }
 }
+function anyMissingBrand(data: any): boolean {
+  try {
+    for (const r of data?.results ?? []) {
+      for (const b of r?.basket ?? []) {
+        if (typeof b.brand !== "string" || b.brand.trim() === "") return true;
+      }
+    }
+  } catch { /* ignore */ }
+  return false;
+}
 
 // ========= API =========
 app.get("/api/health", (c) => c.json({ ok: true, model: MODEL, hasKey: !!API_KEY }));
@@ -56,10 +66,27 @@ app.post("/api/search", async (c) => {
     if (!list_text) needed.push("list_text");
     if (needed.length) return c.json({ status: "need_input", needed }, 400);
 
+    // ===== System prompt: מותגים חובה + תחליפים והערות =====
     const system = `
-You are a shopping-comparison assistant. Return ONLY strict JSON that can be JSON.parsed.
-Identify ~3 nearby stores (placeholders allowed), fuzzy-match the user's free-text list (commas may be missing),
-include brand when obvious, allow substitutions, sort stores cheapest→expensive. Use ILS (₪).
+You are a shopping-comparison assistant for Israel. Return ONLY strict JSON that can be JSON.parsed.
+
+Goals:
+- Parse user's free-text grocery list (Hebrew, commas may be missing).
+- For EVERY item you return, you MUST include a real, common Israeli brand name (non-empty string).
+- If the user's text is generic (e.g., "מים", "חלב", "לחם"), choose a well-known brand in Israel.
+- If no exact brand match is clear, pick a likely/common brand and add a short explanation in 'notes'.
+- If a true equivalent is unavailable, provide a close substitute, set substitution: true, and explain in notes.
+- Output 3–4 nearby stores (placeholders allowed), sorted by total_price ascending (cheapest → expensive).
+- Use ILS ("₪") and distances in kilometers. Be realistic with prices, prefer mainstream brands.
+
+Branding guidance (examples, not exhaustive):
+- "מים מינרליים" → "מי עדן" | "נביעות"
+- "חלב 3%" → "תנובה" | "טרה" | "שטראוס"
+- "לחם פרוס" → "אנג'ל" | "דגנית עין בר"
+- "קולה" → "Coca-Cola" | "Pepsi"
+- "טונה" → "סטארקיסט" | "ויליפוד"
+- "גבינה לבנה/קוטג'" → "תנובה" | "שטראוס"
+- "חיתולים" → "Huggies" | "Pampers"
 
 JSON shape EXACTLY:
 {
@@ -75,20 +102,24 @@ JSON shape EXACTLY:
       "match_overall": number,
       "basket": [
         {
-          "name": "string",
-          "brand": "string (optional)",
+          "name": "string",            // המוצר כפי שהובן מהמשתמש (בעברית)
+          "brand": "string",           // חובה: מותג אמיתי ונפוץ בישראל
           "quantity": number,
           "unit_price": number,
           "line_total": number,
-          "match_confidence": number,
-          "substitution": boolean (optional),
-          "notes": "string (optional)"
+          "match_confidence": number,  // 0..1
+          "substitution": boolean,     // true אם זה תחליף (רשות אם false)
+          "notes": "string"            // הסבר קצר (למשל: "בחרתי 'נביעות' כמותג נפוץ למים מינרליים")
         }
       ]
     }
   ]
 }
-Return ONLY JSON. No Markdown, no prose.
+
+Constraints:
+- Always include "brand" as a non-empty string for every basket item.
+- When in doubt, choose a mainstream brand and explain briefly in notes.
+- Return ONLY JSON. No Markdown, no prose.
 `.trim();
 
     const user = `
@@ -97,8 +128,8 @@ Radius_km: ${radius_km}
 User list (free text, commas optional): ${list_text}
 `.trim();
 
-    // ❗️ללא temperature/top_p — לא נתמך ב-GPT-5
-    const ai = await client.responses.create({
+    // ===== קריאת OpenAI (ללא temperature/top_p) =====
+    const primary = await client.responses.create({
       model: MODEL,
       input: [
         { role: "system", content: system },
@@ -106,16 +137,47 @@ User list (free text, commas optional): ${list_text}
       ],
     });
 
-    const raw = ai.output_text ?? "";
-    const jsonText = extractJsonBlock(raw);
-    const parsed = safeParse<any>(jsonText);
-    if (!parsed.ok) {
-      return c.json({ status: "error", message: "LLM returned invalid JSON", details: parsed.error, raw }, 502);
+    const raw1 = primary.output_text ?? "";
+    const text1 = extractJsonBlock(raw1);
+    const parsed1 = safeParse<any>(text1);
+
+    if (!parsed1.ok) {
+      return c.json({ status: "error", message: "LLM returned invalid JSON", details: parsed1.error, raw: raw1 }, 502);
     }
 
-    const data = parsed.data;
+    let data = parsed1.data;
+
+    // ===== Fix Pass: אם יש פריט בלי brand — מבקשים תיקון אוטומטי =====
+    if (anyMissingBrand(data)) {
+      const fixSystem = `
+You must FIX the following JSON so that EVERY basket item has a non-empty "brand" string.
+- Keep the same structure and pricing.
+- For generic items, fill a common Israeli brand.
+- If truly a substitute, set substitution: true and add a short note.
+Return ONLY JSON.
+`.trim();
+
+      const fix = await client.responses.create({
+        model: MODEL,
+        input: [
+          { role: "system", content: fixSystem },
+          { role: "user",   content: JSON.stringify(data) },
+        ],
+      });
+
+      const raw2 = fix.output_text ?? "";
+      const text2 = extractJsonBlock(raw2);
+      const parsed2 = safeParse<any>(text2);
+      if (parsed2.ok) data = parsed2.data;
+    }
+
+    // ולידציה סופית
     if (data?.status !== "ok" || !Array.isArray(data?.results)) {
       return c.json({ status: "no_results", message: "Unexpected shape from LLM", raw: data }, 200);
+    }
+    if (anyMissingBrand(data)) {
+      // עדיין חסר מותג? נחזיר אזהרה אבל נספק את התוצאה
+      return c.json({ status: "ok", results: data.results, warning: "Some items missing 'brand' after fix." }, 200);
     }
 
     return c.json({ status: "ok", results: data.results }, 200);
@@ -193,14 +255,16 @@ async function go(){
         const unit=Number(b.unit_price||0).toFixed(2);
         const line=Number(b.line_total||0).toFixed(2);
         const brand=b.brand? ' <span class="muted">• '+escapeHtml(b.brand)+'</span>':'';
-        return '<div class="row"><div><strong>'+escapeHtml(b.name)+'</strong>'+brand+'<div class="muted">כמות: '+escapeHtml(b.quantity)+' • מחיר יחידה: '+unit+'</div></div><div>'+line+'</div></div>';
+        const sub=b.substitution? ' <span class="muted">(תחליף)</span>':'';
+        const notes=b.notes? '<div class="muted">'+escapeHtml(b.notes)+'</div>':'';
+        return '<div class="row"><div><strong>'+escapeHtml(b.name)+'</strong>'+brand+sub+'<div class="muted">כמות: '+escapeHtml(b.quantity)+' • מחיר יחידה: '+unit+'</div>'+notes+'</div><div>'+line+'</div></div>';
       }).join('');
       return '<div class="row"><div><strong>#'+r.rank+' — '+escapeHtml(r.store_name)+'</strong><div class="muted">'+escapeHtml(r.address)+' • '+escapeHtml(r.distance_km)+' ק״מ</div></div><div>'+total+' '+escapeHtml(r.currency||"₪")+'</div></div><div style="height:8px"></div>'+rows;
     }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
 function escapeHtml(s){
-  // הוסר ה-backtick מהרגקס כדי לא לשבור את ה-Template Literal החיצוני
+  // ללא backtick ברגקס כדי לא לשבור את ה-Template Literal
   return String(s??'').replace(/[&<>"'\/]/g, function(c){
     return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c];
   });
