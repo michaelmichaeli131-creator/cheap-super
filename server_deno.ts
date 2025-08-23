@@ -1,248 +1,193 @@
 // server_deno.ts
-// Deno Deploy + Hono (npm) + OpenAI GPT-5 + Perplexity (web) + Static /public
-// מחוזק: JSON coercion/repair במסלול Perplexity בלבד. מסלול OpenAI נשאר כפי שהוא.
+// Deno Deploy + Hono (npm) + OpenAI (GPT-5) + Google Gemini (Structured Output)
+// שומר את מסלול OpenAI כפי שהוא (להחזרת JSON לפי סכימה), ומוסיף ענף Gemini עם Structured Output.
+// בחירה דרך provider או DEFAULT_PROVIDER. כולל Allowlist, sanity למחירים, סטטי ל/public.
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { serveStatic } from "npm:hono/serve-static";
 import OpenAI from "npm:openai";
+import { GoogleGenerativeAI, SchemaType } from "npm:@google/generative-ai";
 
 // ========= ENV =========
-const OPENAI_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
-const MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
+const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
 
-const PPLX_KEY = Deno.env.get("PERPLEXITY_API_KEY") || "";
-const USE_WEB = (Deno.env.get("USE_WEB") || "none").toLowerCase(); // "none" | "perplexity"
+const GEMINI_KEY   = Deno.env.get("GEMINI_API_KEY") || "";
 
 const ALLOW_PROVIDER_OVERRIDE = Deno.env.get("ALLOW_PROVIDER_OVERRIDE") === "true";
-type Provider = "openai" | "perplexity";
+const DEFAULT_PROVIDER = (Deno.env.get("DEFAULT_PROVIDER") || "openai").toLowerCase() as "openai"|"gemini";
 
-// ========= APP =========
+// רשימת דומיינים מותרים למקורות מחירים
+const ALLOW_DOMAINS = (Deno.env.get("ALLOW_DOMAINS") || `
+shufersal.co.il
+ramilevy.co.il
+victoryonline.co.il
+yohananof.co.il
+tivtaam.co.il
+zap.co.il
+`.trim()).split(/\s+/).map(s=>s.trim().toLowerCase()).filter(Boolean);
+
+// ========= APP / CLIENTS =========
 const app = new Hono();
+app.use("/api/*", cors({
+  origin: "*",
+  allowMethods: ["GET","POST","OPTIONS"],
+  allowHeaders: ["Content-Type","Authorization"],
+}));
 
-// CORS לנתיבי ה-API בלבד
-app.use(
-  "/api/*",
-  cors({
-    origin: "*",
-    allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
-  }),
-);
-
-// ========= OpenAI client =========
 const openai = new OpenAI({ apiKey: OPENAI_KEY });
+const gemini = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
 
-// ========= Types / Helpers =========
+// ========= Helpers =========
 type ChatMsg = { role: "system" | "user"; content: string };
 
 function extractJsonBlock(s: string): string {
-  // כלי פשוט למסלול OpenAI בלבד (Perplexity משתמש במייצב המחוזק)
   const start = s.indexOf("{");
-  const end = s.lastIndexOf("}");
-  return (start >= 0 && end > start) ? s.slice(start, end + 1) : s.trim();
+  const end   = s.lastIndexOf("}");
+  return (start>=0 && end>start) ? s.slice(start, end+1) : s.trim();
 }
-
-function safeParse<T = unknown>(t: string): { ok: true; data: T } | { ok: false; error: string } {
-  try { return { ok: true, data: JSON.parse(t) as T }; }
-  catch (e) { return { ok: false, error: (e as Error).message || "JSON parse error" }; }
+function safeParse<T=unknown>(t: string): {ok:true; data:T}|{ok:false; error:string} {
+  try { return { ok:true, data: JSON.parse(t) as T }; }
+  catch(e){ return { ok:false, error: (e as Error).message || "JSON parse error" }; }
 }
-
-function anyMissingBrand(data: any): boolean {
+function anyMissingBrand(data:any): boolean {
   try {
-    for (const r of data?.results ?? []) {
-      for (const b of r?.basket ?? []) {
-        if (typeof b.brand !== "string" || b.brand.trim() === "") return true;
-      }
-    }
-  } catch { /* ignore */ }
+    for (const r of data?.results ?? []) for (const b of r?.basket ?? [])
+      if (typeof b.brand !== "string" || b.brand.trim()==="") return true;
+  } catch {}
   return false;
 }
-
-function pickProvider(globalDefault: "none" | "perplexity", requestPref?: Provider): Provider {
-  if (ALLOW_PROVIDER_OVERRIDE && (requestPref === "openai" || requestPref === "perplexity")) {
-    return requestPref;
-  }
-  return globalDefault === "perplexity" ? "perplexity" : "openai";
+function domainAllowed(domain:string): boolean {
+  const d = (domain||"").toLowerCase();
+  return ALLOW_DOMAINS.some(x => d===x || d.endsWith("."+x));
+}
+function sanePrice(n:number|null|undefined): boolean {
+  return typeof n==="number" && isFinite(n) && n>=0.5 && n<=200;
+}
+function pickProvider(defaultProv: "openai"|"gemini", requested?: string): "openai"|"gemini" {
+  const req = (requested||"").toLowerCase();
+  const norm = req==="gemini" ? "gemini" : req==="openai" ? "openai" : "";
+  if (ALLOW_PROVIDER_OVERRIDE && norm) return norm as "openai"|"gemini";
+  return defaultProv;
 }
 
-// ========= JSON helpers (Perplexity only) =========
-const SCHEMA_KEYS = new Set([
-  "status","results","rank","store_name","address","distance_km","currency",
-  "total_price","match_overall","basket",
-  "name","brand","quantity","unit_price","line_total","match_confidence","substitution","notes"
-]);
-
-function removeCodeFences(s: string): string {
-  if (!s) return s;
-  s = s.replace(/```json\s*([\s\S]*?)```/gi, "$1");
-  s = s.replace(/```\s*([\s\S]*?)```/g, "$1");
-  return s;
-}
-function normalizeQuotes(s: string): string {
-  return s
-    .replace(/[\u201C\u201D\u05F4]/g, '"') // ” “ ״
-    .replace(/[\u2018\u2019]/g, "'")       // ‘ ’
-    .replace(/\u00A0/g, " ");              // NBSP
-}
-function stripComments(s: string): string {
-  return s
-    .replace(/\/\*[\s\S]*?\*\//g, "")     // /* ... */
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");  // // ... (לא אחרי ':')
-}
-function stripDanglingCommas(s: string): string {
-  return s
-    .replace(/,\s*([}\]])/g, "$1")  // לפני } ]
-    .replace(/:\s*,/g, ": ");       // אחרי ':'
-}
-function extractBiggestJsonObject(s: string): string {
-  let best = "";
-  let depth = 0, start = -1;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === "{") { if (depth === 0) start = i; depth++; }
-    else if (ch === "}") {
-      if (depth > 0) depth--;
-      if (depth === 0 && start >= 0) {
-        const cand = s.slice(start, i + 1).trim();
-        if (cand.length > best.length) best = cand;
-        start = -1;
-      }
-    }
-  }
-  return best || s.trim();
-}
-// מצמיד מרכאות רק למפתחות מוכרים מה-schema – לא נוגע בטקסטים בעברית בערכים
-function quoteAllowedKeys(s: string): string {
-  return s.replace(/([{\s,])\s*([A-Za-z_][\w-]*)\s*:/g, (_m, pre, key) => {
-    if (SCHEMA_KEYS.has(key)) return `${pre}"${key}":`;
-    return `${pre}${key}:`;
-  });
-}
-
-function coerceToJsonStrict(raw: string): { ok: true; text: string } | { ok: false; error: string } {
-  if (!raw || typeof raw !== "string") return { ok: false, error: "empty" };
-  let cand = removeCodeFences(raw);
-  cand = stripComments(cand);
-  cand = normalizeQuotes(cand);
-  cand = extractBiggestJsonObject(cand);
-  cand = quoteAllowedKeys(cand);
-  try { JSON.parse(cand); return { ok: true, text: cand }; } catch {}
-  cand = stripDanglingCommas(cand);
-  try { JSON.parse(cand); return { ok: true, text: cand }; } catch (e) {
-    return { ok: false, error: (e as Error).message || "parse failed" };
-  }
-}
-
-// ========= Providers =========
-async function callPerplexity(messages: ChatMsg[]): Promise<string> {
-  if (!PPLX_KEY) throw new Error("Missing PERPLEXITY_API_KEY");
-  const r = await fetch("https://api.perplexity.ai/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${PPLX_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "sonar-pro", // גלישה מובנית
-      messages,
-      max_tokens: 1400,
-    }),
-  });
-  if (!r.ok) {
-    const txt = await r.text().catch(() => "");
-    throw new Error(`Perplexity ${r.status}: ${txt}`);
-  }
-  const j = await r.json();
-  return j?.choices?.[0]?.message?.content ?? "";
-}
-
+// ========= OpenAI =========
 async function callOpenAI(messages: ChatMsg[]): Promise<string> {
   if (!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
   const resp = await openai.responses.create({
-    model: MODEL,
+    model: OPENAI_MODEL,
     input: messages,
+    // לא שולחים temperature/top_p למניעת שגיאות מודל
   });
   return resp.output_text ?? "";
 }
 
-async function repairJsonWithPerplexity(badText: string, schemaHint?: string): Promise<string> {
-  if (!PPLX_KEY) return badText;
-  const repairSystem = `
-Return STRICT JSON ONLY. No markdown, no fences, no prose.
-If input contains invalid JSON (quotes/commas/unquoted keys), fix to valid JSON.
-The JSON MUST match exactly this structure and keys only:
-${schemaHint ?? ""}
-`.trim();
+// ========= Gemini (Structured Output) =========
+const SearchResultsSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    status: { type: SchemaType.STRING },
+    results: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          rank: { type: SchemaType.NUMBER },
+          store_name: { type: SchemaType.STRING },
+          address: { type: SchemaType.STRING },
+          distance_km: { type: SchemaType.NUMBER },
+          currency: { type: SchemaType.STRING },
+          total_price: { type: SchemaType.NUMBER },
+          match_overall: { type: SchemaType.NUMBER },
+          basket: {
+            type: SchemaType.ARRAY,
+            items: {
+              type: SchemaType.OBJECT,
+              properties: {
+                name: { type: SchemaType.STRING },
+                brand: { type: SchemaType.STRING },
+                quantity: { type: SchemaType.NUMBER },
+                unit_price: { type: SchemaType.NUMBER, nullable: true },
+                line_total: { type: SchemaType.NUMBER },
+                match_confidence: { type: SchemaType.NUMBER },
+                substitution: { type: SchemaType.BOOLEAN },
+                notes: { type: SchemaType.STRING },
+                price_source: { type: SchemaType.STRING, enum: ["retailer","aggregator","catalog"] },
+                product_url: { type: SchemaType.STRING },
+                source_domain: { type: SchemaType.STRING },
+                last_checked: { type: SchemaType.STRING }
+              },
+              required: ["name","brand","quantity","line_total","match_confidence","substitution","notes","price_source","product_url","source_domain","last_checked"]
+            }
+          },
+          sources: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
+        },
+        required: ["rank","store_name","distance_km","currency","total_price","basket"]
+      }
+    }
+  },
+  required: ["status","results"]
+} as const;
 
-  const msgs: ChatMsg[] = [
-    { role: "system", content: repairSystem },
-    { role: "user", content: badText },
-  ];
-
-  const r = await fetch("https://api.perplexity.ai/chat/completions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${PPLX_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "sonar-pro", messages: msgs, max_tokens: 800 }),
+async function callGeminiStructured(systemPrompt: string, userPrompt: string): Promise<string> {
+  if (!GEMINI_KEY || !gemini) throw new Error("Missing GEMINI_API_KEY");
+  const model = gemini.getGenerativeModel({
+    model: "gemini-1.5-pro",
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: SearchResultsSchema as any
+    }
   });
-  if (!r.ok) throw new Error(`Perplexity repair ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  return j?.choices?.[0]?.message?.content ?? "";
+  const content = `${systemPrompt}\n\n${userPrompt}`.trim();
+  const res = await model.generateContent([{ role: "user", parts: [{ text: content }] }]);
+  return res.response?.text?.() ?? "";
 }
 
 // ========= API =========
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
-    model: MODEL,
-    use_web: USE_WEB,
+    openai_model: OPENAI_MODEL,
+    default_provider: DEFAULT_PROVIDER,
     allow_override: ALLOW_PROVIDER_OVERRIDE,
     has_openai_key: !!OPENAI_KEY,
-    has_perplexity_key: !!PPLX_KEY,
+    has_gemini_key: !!GEMINI_KEY,
+    allow_domains: ALLOW_DOMAINS
   })
 );
 
 app.post("/api/search", async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch(()=> ({}));
     const address   = String(body?.address ?? "").trim();
     const radius_km = Number(body?.radius_km ?? 0);
     const list_text = String(body?.list_text ?? "").trim();
-    const requestedProvider = String(body?.provider ?? "").toLowerCase() as Provider | "";
+    const requested = String(body?.provider ?? "").toLowerCase();
 
-    const needed: string[] = [];
+    const needed:string[] = [];
     if (!address) needed.push("address");
     if (!radius_km || isNaN(radius_km)) needed.push("radius_km");
     if (!list_text) needed.push("list_text");
-    if (needed.length) return c.json({ status: "need_input", needed }, 400);
+    if (needed.length) return c.json({ status:"need_input", needed }, 400);
 
-    // בחירת ספק
-    const provider = pickProvider(USE_WEB as "none" | "perplexity", requestedProvider || undefined);
+    const provider = pickProvider(DEFAULT_PROVIDER, requested);
 
-    // אם ביקשו אינטרנט ואין KEY — תחזיר הודעה ברורה
-    if (provider === "perplexity" && !PPLX_KEY) {
-      return c.json({
-        status: "error",
-        message: "PERPLEXITY_API_KEY missing while provider=perplexity",
-        hint: "Set PERPLEXITY_API_KEY in Deno Deploy and redeploy."
-      }, 400);
-    }
-
-    // ===== System prompt =====
+    // ===== System prompt (קשיח למקורות, JSON בלבד) =====
     const system = `
-You are a shopping-comparison assistant for Israel. Return ONLY strict JSON that can be JSON.parsed.
+You are a price-comparison assistant for Israel. Return ONLY strict JSON matching the schema below. No markdown, no prose.
 
-Goals:
-- Parse user's free-text grocery list (Hebrew; commas may be missing).
-- For EVERY item you return, you MUST include a real, common Israeli brand (non-empty string).
-- If the user's text is generic (e.g., "מים", "חלב", "לחם"), choose a well-known brand in Israel.
-- If no exact brand match is clear, pick a likely/common brand and add a short explanation in 'notes'.
-- If a true equivalent is unavailable, provide a close substitute, set substitution: true, and explain in notes.
-- Output 3–4 nearby stores (placeholders allowed), sorted by total_price ascending (cheapest → expensive).
-- Use ILS ("₪") and distances in kilometers. Be realistic with prices, prefer mainstream brands.
-- If your provider supports web browsing (Perplexity), leverage live search to ground brands/prices.
+Hard requirements:
+- Every price MUST be backed by a valid URL of: retailer site, recognized price-aggregator, or product/catalog page of the retailer.
+- Do NOT use news/blogs/forums/social media for pricing.
+- If no acceptable source found: set "unit_price": null and explain briefly in "notes".
+- Always include: "price_source" ∈ {"retailer","aggregator","catalog"}, "product_url", "source_domain", and "last_checked" (UTC ISO-8601 date of today).
+- "currency" must be "₪".
+- Every basket item MUST include non-empty "brand". If the item is generic, choose a common Israeli brand and explain briefly in notes.
+- Output 3–4 stores sorted by total_price ascending (cheapest → expensive). Distances in km. Prefer mainstream brands.
+- Return ONLY JSON that can be JSON.parsed.
 
-JSON shape EXACTLY:
+JSON schema EXACTLY:
 {
   "status": "ok",
   "results": [
@@ -259,166 +204,107 @@ JSON shape EXACTLY:
           "name": "string",
           "brand": "string",
           "quantity": number,
-          "unit_price": number,
+          "unit_price": number|null,
           "line_total": number,
           "match_confidence": number,
           "substitution": boolean,
-          "notes": "string"
+          "notes": "string",
+          "price_source": "retailer"|"aggregator"|"catalog",
+          "product_url": "https://...",
+          "source_domain": "example.co.il",
+          "last_checked": "2025-08-23"
         }
-      ]
+      ],
+      "sources": ["https://...", "https://..."]
     }
   ]
 }
-
-Constraints:
-- Always include "brand" as a non-empty string for every basket item.
-- When in doubt, choose a mainstream brand and explain briefly in notes.
-- Return ONLY JSON. No Markdown, no prose.
 `.trim();
 
     const user = `
 Provider: ${provider}
 Address: ${address}
 Radius_km: ${radius_km}
-User list (free text, commas optional): ${list_text}
+User list (free text; commas optional): ${list_text}
+
+Additional instructions:
+- Search first on official Israeli retailers' product pages or known price aggregators.
+- If no reliable price found, set unit_price=null (do not guess) and explain in notes.
+- Return 3–4 relevant stores, sorted by total_price.
 `.trim();
 
-    const messages: ChatMsg[] = [
-      { role: "system", content: system },
-      { role: "user",   content: user   },
-    ];
-
-    // ===== קריאה ל-LLM =====
+    // ===== קריאה לספק הנבחר =====
     let rawText = "";
-    let text1 = "";
-
-    if (provider === "perplexity") {
-      rawText = await callPerplexity(messages);
-
-      const schemaHint = `
-{
-  "status":"ok",
-  "results":[
-    {
-      "rank":1,
-      "store_name":"string",
-      "address":"string",
-      "distance_km":number,
-      "currency":"₪",
-      "total_price":number,
-      "match_overall":number,
-      "basket":[
-        {
-          "name":"string",
-          "brand":"string",
-          "quantity":number,
-          "unit_price":number,
-          "line_total":number,
-          "match_confidence":number,
-          "substitution":boolean,
-          "notes":"string"
-        }
-      ]
-    }
-  ]
-}`.trim();
-
-      // 1) Sanitizer מקומי
-      let coerced = coerceToJsonStrict(rawText);
-
-      // 2) Repair #1 אם נכשל
-      if (!coerced.ok) {
-        const repaired1 = await repairJsonWithPerplexity(rawText, schemaHint);
-        coerced = coerceToJsonStrict(repaired1);
+    if (provider === "gemini") {
+      if (!GEMINI_KEY) {
+        return c.json({ status:"error", message:"GEMINI_API_KEY missing while provider=gemini" }, 400);
       }
-
-      // 3) Repair #2 אם עדיין נכשל (לעתים עוזר)
-      if (!coerced.ok) {
-        const repaired2 = await repairJsonWithPerplexity(coerced.error + "\n\n" + rawText, schemaHint);
-        coerced = coerceToJsonStrict(repaired2);
-      }
-
-      if (!coerced.ok) {
-        return c.json({
-          status: "error",
-          message: "LLM returned invalid JSON (perplexity)",
-          details: coerced.error,
-          raw_preview: String(rawText).slice(0, 1400)
-        }, 502);
-      }
-      text1 = coerced.text;
-
+      rawText = await callGeminiStructured(system, user); // JSON מובנה
     } else {
-      // OpenAI – ללא שינוי
-      rawText = await callOpenAI(messages);
-      text1 = extractJsonBlock(rawText);
+      const messages: ChatMsg[] = [
+        { role:"system", content: system },
+        { role:"user",   content: user   },
+      ];
+      const raw = await callOpenAI(messages);
+      rawText = extractJsonBlock(raw); // הוצאה פשוטה מהטקסט
     }
 
     // ===== Parse =====
-    const parsed1 = safeParse<any>(text1);
+    const parsed1 = safeParse<any>(rawText);
     if (!parsed1.ok) {
-      return c.json({ status: "error", message: "LLM returned invalid JSON", details: parsed1.error, raw: text1.slice(0,1200) }, 502);
+      return c.json({ status:"error", message:"LLM returned non-JSON text", details: parsed1.error, raw_preview: String(rawText).slice(0,1200) }, 502);
     }
     let data = parsed1.data;
 
-    // ===== Fix-Pass: ודא שלכל פריט יש brand =====
-    if (anyMissingBrand(data)) {
+    // ===== Validation & cleanup =====
+    if (data?.status !== "ok" || !Array.isArray(data?.results)) {
+      return c.json({ status:"no_results", provider, message:"Unexpected shape from LLM", raw: data }, 200);
+    }
+
+    for (const r of data.results) {
+      for (const b of (r.basket || [])) {
+        const domain = (b.source_domain || "").toLowerCase();
+        if (!domainAllowed(domain)) {
+          b.unit_price = null;
+          b.notes = (b.notes || "") + " • מקור לא ברשימת האתרים המותרים";
+        }
+        if (!sanePrice(b.unit_price)) {
+          b.unit_price = null;
+          b.notes = (b.notes || "") + " • מחיר לא נראה תקין — סומן כ-null";
+        }
+        b.line_total = (typeof b.unit_price === "number")
+          ? +(Number(b.unit_price) * Number(b.quantity || 1)).toFixed(2)
+          : 0;
+      }
+      r.total_price = +((r.basket || []).reduce((s:number, b:any) =>
+        s + (typeof b.unit_price==="number" ? b.unit_price*(b.quantity||1) : 0), 0).toFixed(2));
+    }
+    data.results.sort((a:any,b:any)=> (a.total_price||0)-(b.total_price||0));
+    data.results.forEach((r:any,i:number)=> r.rank=i+1);
+
+    // Fix-pass למותגים חסרים (זהה ל-OpenAI; אפשר להשאיר גם כש-provider=gemini, אבל נשמור על OpenAI בלבד כדי "לא לפגוע")
+    if (provider === "openai" && anyMissingBrand(data)) {
       const fixSystem = `
 You must FIX the following JSON so that EVERY basket item has a non-empty "brand" string.
 - Keep the same structure and pricing.
-- For generic items, fill a common Israeli brand.
-- If truly a substitute, set substitution: true and add a short note.
+- For generic items, fill a common Israeli brand and add a short note if needed.
 Return ONLY JSON.
 `.trim();
-
       const fixMessages: ChatMsg[] = [
-        { role: "system", content: fixSystem },
-        { role: "user",   content: JSON.stringify(data) },
+        { role:"system", content: fixSystem },
+        { role:"user",   content: JSON.stringify(data) }
       ];
-
-      let raw2 = "";
-      if (provider === "perplexity") raw2 = await callPerplexity(fixMessages);
-      else raw2 = await callOpenAI(fixMessages);
-
-      // החלת coercion בפאס התיקון במסלול Perplexity
-      let text2 = raw2;
-      if (provider === "perplexity") {
-        const c2 = coerceToJsonStrict(raw2);
-        text2 = c2.ok ? c2.text : extractJsonBlock(raw2);
-      } else {
-        text2 = extractJsonBlock(raw2);
-      }
-
-      const parsed2 = safeParse<any>(text2);
+      const raw2 = await callOpenAI(fixMessages);
+      const t2 = extractJsonBlock(raw2);
+      const parsed2 = safeParse<any>(t2);
       if (parsed2.ok) data = parsed2.data;
     }
 
-    // ===== ולידציה בסיסית =====
-    if (data?.status !== "ok" || !Array.isArray(data?.results)) {
-      return c.json({ status: "no_results", provider, message: "Unexpected shape from LLM", raw: data }, 200);
-    }
-    if (anyMissingBrand(data)) {
-      return c.json({ status: "ok", provider, results: data.results, warning: "Some items missing 'brand' after fix." }, 200);
-    }
-
-    // ===== OK =====
-    return c.json({
-      status: "ok",
-      provider,
-      results: data.results,
-      // debug_routing: {
-      //   requested: requestedProvider || null,
-      //   selected: provider,
-      //   allow_override: ALLOW_PROVIDER_OVERRIDE,
-      //   use_web_default: USE_WEB,
-      //   has_pplx_key: !!PPLX_KEY,
-      //   has_openai_key: !!OPENAI_KEY
-      // }
-    }, 200);
+    return c.json({ status:"ok", provider, results: data.results }, 200);
 
   } catch (err) {
     console.error(err);
-    return c.json({ status: "error", message: String(err) }, 500);
+    return c.json({ status:"error", message:String(err) }, 500);
   }
 });
 
@@ -427,7 +313,6 @@ app.use("/assets/*", serveStatic({ root: "./public" }));
 app.use("/img/*",    serveStatic({ root: "./public" }));
 app.use("/public/*", serveStatic({ root: "./public" }));
 
-// ROOT: הגשה של index.html אם קיים; אחרת fallback מובנה
 app.get("/", async (c) => {
   try {
     const html = await Deno.readTextFile("./public/index.html");
@@ -436,7 +321,6 @@ app.get("/", async (c) => {
     return c.newResponse(FALLBACK_HTML, 200, { "content-type": "text/html; charset=utf-8" });
   }
 });
-
 app.notFound(async (c) => {
   try {
     const html = await Deno.readTextFile("./public/index.html");
@@ -448,7 +332,7 @@ app.notFound(async (c) => {
 
 export default app;
 
-// ========= Fallback inline HTML =========
+// ========= Fallback inline HTML (לדיבאג זריז) =========
 const FALLBACK_HTML = `<!doctype html>
 <html lang="he" dir="rtl">
 <meta charset="utf-8">
@@ -468,10 +352,10 @@ const FALLBACK_HTML = `<!doctype html>
 <div class="wrap">
   <h2>CartCompare AI — Fallback</h2>
   <div class="box">
-    <div class="input"><label>מודל (ספק)</label>
+    <div class="input"><label>ספק</label>
       <select id="provider">
         <option value="openai">OpenAI (GPT-5)</option>
-        <option value="perplexity">Perplexity (Web)</option>
+        <option value="gemini">Gemini (Structured)</option>
       </select>
     </div>
     <div class="input"><label>כתובת</label><input id="addr" placeholder="תל אביב, בן יהודה 10"></div>
@@ -496,21 +380,19 @@ async function go(){
       data.results.map(r=>{
         const total=Number(r.total_price||0).toFixed(2);
         const rows=(r.basket||[]).map(b=>{
-          const unit=Number(b.unit_price||0).toFixed(2);
-          const line=Number(b.line_total||0).toFixed(2);
+          const unit=(typeof b.unit_price==='number')? Number(b.unit_price||0).toFixed(2) : '—';
+          const line=(typeof b.line_total==='number')? Number(b.line_total||0).toFixed(2) : '—';
           const brand=b.brand? ' <span class="muted">• '+escapeHtml(b.brand)+'</span>':'';
           const sub=b.substitution? ' <span class="muted">(תחליף)</span>':'';
+          const src=b.product_url? '<div class="muted"><a href="'+escapeAttr(b.product_url)+'" target="_blank" rel="noopener">מקור</a> • '+escapeHtml(b.source_domain||'')+'</div>':'';
           const notes=b.notes? '<div class="muted">'+escapeHtml(b.notes)+'</div>':'';
-          return '<div class="row"><div><strong>'+escapeHtml(b.name)+'</strong>'+brand+sub+'<div class="muted">כמות: '+escapeHtml(b.quantity)+' • מחיר יחידה: '+unit+'</div>'+notes+'</div><div>'+line+'</div></div>';
+          return '<div class="row"><div><strong>'+escapeHtml(b.name)+'</strong>'+brand+sub+'<div class="muted">כמות: '+escapeHtml(b.quantity)+'</div>'+src+notes+'</div><div>'+line+' '+escapeHtml(r.currency||"₪")+'</div></div>';
         }).join('');
-        return '<div class="row"><div><strong>#'+r.rank+' — '+escapeHtml(r.store_name)+'</strong><div class="muted">'+escapeHtml(r.address)+' • '+escapeHtml(r.distance_km)+' ק״מ</div></div><div>'+total+' '+escapeHtml(r.currency||"₪")+'</div></div><div style="height:8px"></div>'+rows;
+        return '<div class="row"><div><strong>#'+r.rank+' — '+escapeHtml(r.store_name||"")+'</strong><div class="muted">'+escapeHtml(r.address||"")+' • '+escapeHtml(r.distance_km||"")+' ק״מ</div></div><div>'+total+' '+escapeHtml(r.currency||"₪")+'</div></div><div style="height:8px"></div>'+rows;
       }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
-function escapeHtml(s){
-  return String(s??'').replace(/[&<>"'\/]/g, function(c){
-    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c] || c;
-  });
-}
+function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
+function escapeAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 </script>
 </html>`;

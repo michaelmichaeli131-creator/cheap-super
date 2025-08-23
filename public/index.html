@@ -54,6 +54,16 @@
     .trust-dot.ok{background:#10b981}
     .sep{opacity:.4}
 
+    /* AI mode selector */
+    .modes{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px}
+    .mode{border:1px solid #e6edf7; border-radius:16px; padding:12px; background:#fff;
+      cursor:pointer; box-shadow:0 8px 18px #0b3b6a12; text-align:right}
+    .mode[data-active="1"]{outline:3px solid #bae6ff}
+    .mode-title{font-weight:900; display:flex; align-items:center; gap:8px}
+    .mode-desc{color:var(--muted); font-size:12px; margin-top:6px}
+    .mode-dot{width:8px;height:8px;border-radius:50%; background:#9aa4b2}
+    .mode-dot.ok{background:#10b981}
+
     /* ===== Generic layout ===== */
     .screen{display:none}
     .screen.active{display:block}
@@ -95,18 +105,14 @@
     .skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite}
     @keyframes shimmer{100%{transform:translateX(100%)}}
 
-    /* Provider choice (Landing) */
-    .provider-wrap{margin-top:12px}
-    .provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-    .provider-btn{border:none;border-radius:14px;padding:12px 10px;font-weight:900;cursor:pointer;background:#eef6ff;color:#0369a1}
-    .provider-btn[data-active="1"]{background:#cfeeff;color:#00364a;box-shadow:0 6px 14px #0b3b6a22}
-    .tag{display:inline-block;padding:4px 8px;border-radius:999px;background:#e9f7ff;color:#03506b;font-weight:800;font-size:12px}
+    /* Provider pill in results */
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid #e6edf7;background:#fff}
   </style>
 </head>
 <body>
 <div class="app">
 
-  <!-- ===== Screen 1: Landing (clean) + provider choice ===== -->
+  <!-- ===== Screen 1: Landing (clean) ===== -->
   <section id="s1" class="screen active">
     <div class="landing">
       <header class="landing-head">
@@ -127,19 +133,24 @@
           <span class="badge chip">🤖 AI</span>
         </div>
 
-        <!-- Provider choice on Landing -->
-        <div class="provider-wrap">
-          <div style="font-weight:800">בחרו מנוע AI</div>
-          <div class="muted" style="font-size:13px;margin-top:4px">
-            <b>🤖 AI רגיל</b> — מהיר ויציב (GPT-5) • <b>🌐 AI עם אינטרנט</b> — מחפש מקורות חיים (Perplexity)
-          </div>
-          <div class="provider-grid" id="providerGrid">
-            <button class="provider-btn" type="button" data-provider="openai" data-active="1">🤖 AI רגיל</button>
-            <button class="provider-btn" type="button" data-provider="perplexity" data-active="0">🌐 AI עם אינטרנט</button>
+        <!-- בחירת מצב AI -->
+        <div class="box" style="text-align:right">
+          <div style="font-weight:900;margin-bottom:8px">בחירת מצב AI</div>
+          <div class="modes" id="modes">
+            <div class="mode" data-provider="openai" data-active="1" tabindex="0" role="button" aria-pressed="true">
+              <div class="mode-title">🧠 AI קלאסי (OpenAI)</div>
+              <div class="mode-desc">מהיר ויציב. ללא גלישה לרשת.</div>
+              <div class="mode-desc"><span class="mode-dot ok" id="openaiDot"></span> זמין</div>
+            </div>
+            <div class="mode" data-provider="gemini" data-active="0" tabindex="0" role="button" aria-pressed="false">
+              <div class="mode-title">🌐 AI עם אינטרנט (Gemini)</div>
+              <div class="mode-desc">Structured Output + ניסיון להביא מחירים ממקורות ברשת.</div>
+              <div class="mode-desc"><span class="mode-dot" id="geminiDot"></span> בודק זמינות…</div>
+            </div>
           </div>
         </div>
 
-        <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
+        <button id="startBtn" class="btn btn-black hero-cta" style="margin-top:10px">בואו נתחיל</button>
         <button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
       </div>
 
@@ -202,13 +213,13 @@
     </div>
   </section>
 
-  <!-- ===== Screen 5: Results ===== -->
+  <!-- ===== Screen 5: Results (no images, expandable basket) ===== -->
   <section id="s5" class="screen">
     <div class="page">
       <div class="box">
-        <div style="font-weight:800; font-size:20px; display:flex; justify-content:space-between; align-items:center">
-          <span>התוצאות</span>
-          <span id="providerTag" class="tag" title="ספק ה-AI"></span>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:800; font-size:20px">התוצאות</div>
+          <div id="providerPill" class="pill" title="מצב AI נוכחי" aria-live="polite">🧠 OpenAI</div>
         </div>
         <div class="muted" style="margin-top:6px">מדורגות מהזול ליקר (לפי ה-AI)</div>
         <div id="results" style="margin-top:12px"></div>
@@ -243,28 +254,51 @@
 
   const resultsEl = document.getElementById('results');
   const loadingEl = document.getElementById('loading');
-  const providerTag = document.getElementById('providerTag');
+  const providerPill = document.getElementById('providerPill');
 
-  // ==== Provider state (with localStorage) ====
-  const LS_KEY = 'cc_provider';
+  // AI mode state
+  let provider = 'openai'; // ברירת מחדל; ישתנה לפי בחירת המשתמש או /api/health
+  const modesWrap = document.getElementById('modes');
+  const openaiDot = document.getElementById('openaiDot');
+  const geminiDot = document.getElementById('geminiDot');
+
   function setProvider(p){
-    provider = (p === 'perplexity') ? 'perplexity' : 'openai';
-    localStorage.setItem(LS_KEY, provider);
-    // update UI buttons on landing
-    document.querySelectorAll('#providerGrid .provider-btn').forEach(b=>{
-      b.dataset.active = (b.getAttribute('data-provider') === provider) ? '1' : '0';
+    provider = p;
+    // עדכון UI
+    document.querySelectorAll('.mode').forEach(m=>{
+      const active = m.getAttribute('data-provider')===provider ? "1" : "0";
+      m.setAttribute('data-active', active);
+      m.setAttribute('aria-pressed', active==="1" ? "true" : "false");
     });
+    providerPill.textContent = (provider==='gemini') ? '🌐 Gemini' : '🧠 OpenAI';
   }
-  let provider = localStorage.getItem(LS_KEY) || 'openai';
-  // apply initial UI state for provider buttons once DOM is ready:
-  window.requestAnimationFrame(()=> setProvider(provider));
 
-  // landing provider buttons
-  document.addEventListener('click', (e)=>{
-    const btn = e.target.closest('#providerGrid .provider-btn');
-    if(!btn) return;
-    const p = btn.getAttribute('data-provider');
-    setProvider(p);
+  // בדיקת זמינות מהשרת
+  (async function checkHealth(){
+    try{
+      const r = await fetch('/api/health');
+      const j = await r.json();
+      // סימון זמינות
+      if(j?.has_gemini_key){ geminiDot.classList.add('ok'); geminiDot.nextSibling && (geminiDot.nextSibling.textContent=''); }
+      else { geminiDot.classList.remove('ok'); }
+      // אם ברירת מחדל מהשרת היא gemini – נבחר אותה אוטומטית
+      if(j?.default_provider === 'gemini') setProvider('gemini');
+      else setProvider('openai');
+    }catch{}
+  })();
+
+  // בחירת מצב AI בלחיצה
+  modesWrap.addEventListener('click', (e)=>{
+    const card = e.target.closest('.mode');
+    if(!card) return;
+    const p = card.getAttribute('data-provider');
+    if(p) setProvider(p);
+  });
+  modesWrap.addEventListener('keydown', (e)=>{
+    if(e.key==='Enter' || e.key===' '){
+      const card = e.target.closest('.mode');
+      if(card){ e.preventDefault(); const p = card.getAttribute('data-provider'); if(p) setProvider(p); }
+    }
   });
 
   function goto(n){
@@ -317,7 +351,7 @@
         address: addressEl.value.trim(),
         radius_km: Number(radiusEl.value || 5),
         list_text: listEl.value.trim(),
-        provider // יישלח לשרת; יעבוד אם ALLOW_PROVIDER_OVERRIDE=true
+        provider  // <-- נשלח לשרת
       };
       const res = await fetch('/api/search', {
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -329,38 +363,38 @@
 
       if(!res.ok){
         resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
-        providerTag.textContent = '';
         return;
       }
       if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
-        resultsEl.innerHTML = row('לא נמצאו תוצאות', 'נסו להגדיל את הרדיוס או לשנות ניסוח');
-        providerTag.textContent = prettyProvider(data.provider || provider);
+        resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו להגדיל את הרדיוס או לשנות ניסוח');
         return;
       }
 
-      // Provider tag
-      providerTag.textContent = prettyProvider(data.provider || provider);
+      // עדכון הכדורית למעלה לפי מה שחזר מהשרת בפועל (אם השתנה)
+      if (data.provider) setProvider(String(data.provider));
 
-      // Render rows of stores + basket
+      // Render rows of stores + expandable basket (no images)
       resultsEl.innerHTML = data.results.map(r=>{
         const total = Number(r.total_price || 0).toFixed(2);
         const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
 
         const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
           const conf = (typeof b.match_confidence === 'number') ? `${Math.round(b.match_confidence*100)}%` : '—';
-          const line = Number(b.line_total || 0).toFixed(2);
-          const unit = Number(b.unit_price || 0).toFixed(2);
+          const line = (typeof b.line_total === 'number') ? Number(b.line_total || 0).toFixed(2) : '—';
+          const unit = (typeof b.unit_price === 'number') ? Number(b.unit_price || 0).toFixed(2) : '—';
           const sub  = b.substitution ? '<span class="badge" style="background:#fffbea;color:#713f12">תחליף</span>' : '';
           const notes = b.notes ? `<div class="muted" style="font-size:12px">${esc(b.notes)}</div>` : '';
           const brand = (typeof b.brand === 'string' && b.brand.trim()) ? ` <span class="muted" style="font-size:12px">• ${esc(b.brand)}</span>` : '';
+          const src   = b.product_url ? `<div class="muted" style="font-size:12px"><a href="${escapeAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a> • ${esc(b.source_domain||'')}</div>` : '';
           return `
             <div class="row">
               <div>
                 <div><strong>${esc(b.name)}</strong>${brand} ${sub}</div>
                 <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity)} • מחיר יחידה: ${unit} • דיוק: ${conf}</div>
+                ${src}
                 ${notes}
               </div>
-              <div class="total">${line}</div>
+              <div class="total">${line} ${esc(r.currency || '₪')}</div>
             </div>`;
         }).join('') : '';
 
@@ -368,7 +402,7 @@
           <div class="row">
             <div>
               <div><strong>#${esc(r.rank)} — ${esc(r.store_name)}</strong></div>
-              <div class="muted" style="font-size:12px">${esc(r.address)} • ${esc(r.distance_km)} ק״מ • דיוק כללי ${mo}</div>
+              <div class="muted" style="font-size:12px">${esc(r.address || '')} • ${esc(r.distance_km)} ק״מ • דיוק כללי ${mo}</div>
             </div>
             <div class="total">${total} ${esc(r.currency || '₪')}</div>
           </div>
@@ -384,18 +418,12 @@
     }catch(err){
       loadingEl.style.display = 'none';
       resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
-      providerTag.textContent = '';
     }
   });
-
-  function prettyProvider(p){
-    return (p === 'perplexity') ? '🌐 AI עם אינטרנט' : '🤖 AI רגיל';
-  }
 
   function renderSkeleton(){
     resultsEl.innerHTML = '';
     loadingEl.style.display = 'block';
-    providerTag.textContent = '';
   }
   function row(title, msg){
     return `<div class="row"><div><strong>${esc(title)}</strong><div class="muted" style="font-size:12px">${esc(msg)}</div></div></div>`;
@@ -406,6 +434,7 @@
     setTimeout(()=>el.style.borderColor='#e6edf7',320);
   }
   function esc(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
+  function escapeAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 </script>
 </body>
 </html>
