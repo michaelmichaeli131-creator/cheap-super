@@ -1,5 +1,6 @@
 // server_deno.ts
-// Deno Deploy + Hono (npm) + OpenAI GPT-5 + Perplexity (web browsing) + Static /public + JSON repair (Perplexity only)
+// Deno Deploy + Hono (npm) + OpenAI GPT-5 + Perplexity (web) + Static /public
+// מחוזק: JSON coercion/repair במסלול Perplexity בלבד. מסלול OpenAI נשאר כפי שהוא.
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -19,7 +20,7 @@ type Provider = "openai" | "perplexity";
 // ========= APP =========
 const app = new Hono();
 
-// CORS רק לנתיבי ה-API
+// CORS לנתיבי ה-API בלבד
 app.use(
   "/api/*",
   cors({
@@ -32,22 +33,19 @@ app.use(
 // ========= OpenAI client =========
 const openai = new OpenAI({ apiKey: OPENAI_KEY });
 
-// ========= Helpers =========
+// ========= Types / Helpers =========
 type ChatMsg = { role: "system" | "user"; content: string };
 
 function extractJsonBlock(s: string): string {
-  // כלי פשוט – נשאר למסלול OpenAI בלבד
+  // כלי פשוט למסלול OpenAI בלבד (Perplexity משתמש במייצב המחוזק)
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
   return (start >= 0 && end > start) ? s.slice(start, end + 1) : s.trim();
 }
 
 function safeParse<T = unknown>(t: string): { ok: true; data: T } | { ok: false; error: string } {
-  try {
-    return { ok: true, data: JSON.parse(t) as T };
-  } catch (e) {
-    return { ok: false, error: (e as Error).message || "JSON parse error" };
-  }
+  try { return { ok: true, data: JSON.parse(t) as T }; }
+  catch (e) { return { ok: false, error: (e as Error).message || "JSON parse error" }; }
 }
 
 function anyMissingBrand(data: any): boolean {
@@ -68,40 +66,42 @@ function pickProvider(globalDefault: "none" | "perplexity", requestPref?: Provid
   return globalDefault === "perplexity" ? "perplexity" : "openai";
 }
 
-// ===== JSON coercion/repair (Perplexity only) =====
+// ========= JSON helpers (Perplexity only) =========
+const SCHEMA_KEYS = new Set([
+  "status","results","rank","store_name","address","distance_km","currency",
+  "total_price","match_overall","basket",
+  "name","brand","quantity","unit_price","line_total","match_confidence","substitution","notes"
+]);
+
+function removeCodeFences(s: string): string {
+  if (!s) return s;
+  s = s.replace(/```json\s*([\s\S]*?)```/gi, "$1");
+  s = s.replace(/```\s*([\s\S]*?)```/g, "$1");
+  return s;
+}
 function normalizeQuotes(s: string): string {
-  // מירכאות חכמות → רגילות; רווח לא שבור
   return s
-    .replace(/[\u201C\u201D\u05F4]/g, '"')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/\u00A0/g, " ");
+    .replace(/[\u201C\u201D\u05F4]/g, '"') // ” “ ״
+    .replace(/[\u2018\u2019]/g, "'")       // ‘ ’
+    .replace(/\u00A0/g, " ");              // NBSP
+}
+function stripComments(s: string): string {
+  return s
+    .replace(/\/\*[\s\S]*?\*\//g, "")     // /* ... */
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");  // // ... (לא אחרי ':')
 }
 function stripDanglingCommas(s: string): string {
-  // מסיר פסיקים תלויים לפני } או ]
   return s
-    .replace(/,\s*([}\]])/g, "$1")
-    .replace(/:\s*,/g, ": ");
+    .replace(/,\s*([}\]])/g, "$1")  // לפני } ]
+    .replace(/:\s*,/g, ": ");       // אחרי ':'
 }
-function extractJsonCandidate(s: string): string {
-  if (!s) return s;
-
-  // ```json ... ```
-  const fenceJson = s.match(/```json\s*([\s\S]*?)```/i);
-  if (fenceJson?.[1]) return fenceJson[1].trim();
-
-  // ``` ... ```
-  const fence = s.match(/```\s*([\s\S]*?)```/);
-  if (fence?.[1]) return fence[1].trim();
-
-  // הבלוק הגדול ביותר של {...}
+function extractBiggestJsonObject(s: string): string {
   let best = "";
   let depth = 0, start = -1;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === "}") {
+    if (ch === "{") { if (depth === 0) start = i; depth++; }
+    else if (ch === "}") {
       if (depth > 0) depth--;
       if (depth === 0 && start >= 0) {
         const cand = s.slice(start, i + 1).trim();
@@ -110,13 +110,23 @@ function extractJsonCandidate(s: string): string {
       }
     }
   }
-  return (best || s).trim();
+  return best || s.trim();
 }
+// מצמיד מרכאות רק למפתחות מוכרים מה-schema – לא נוגע בטקסטים בעברית בערכים
+function quoteAllowedKeys(s: string): string {
+  return s.replace(/([{\s,])\s*([A-Za-z_][\w-]*)\s*:/g, (_m, pre, key) => {
+    if (SCHEMA_KEYS.has(key)) return `${pre}"${key}":`;
+    return `${pre}${key}:`;
+  });
+}
+
 function coerceToJsonStrict(raw: string): { ok: true; text: string } | { ok: false; error: string } {
   if (!raw || typeof raw !== "string") return { ok: false, error: "empty" };
-  let cand = extractJsonCandidate(raw);
+  let cand = removeCodeFences(raw);
+  cand = stripComments(cand);
   cand = normalizeQuotes(cand);
-
+  cand = extractBiggestJsonObject(cand);
+  cand = quoteAllowedKeys(cand);
   try { JSON.parse(cand); return { ok: true, text: cand }; } catch {}
   cand = stripDanglingCommas(cand);
   try { JSON.parse(cand); return { ok: true, text: cand }; } catch (e) {
@@ -137,7 +147,6 @@ async function callPerplexity(messages: ChatMsg[]): Promise<string> {
       model: "sonar-pro", // גלישה מובנית
       messages,
       max_tokens: 1400,
-      // אל תשלח temperature/top_p
     }),
   });
   if (!r.ok) {
@@ -153,18 +162,17 @@ async function callOpenAI(messages: ChatMsg[]): Promise<string> {
   const resp = await openai.responses.create({
     model: MODEL,
     input: messages,
-    // אל תשלח temperature/top_p (חלק מהמודלים לא תומכים)
   });
   return resp.output_text ?? "";
 }
 
-// ניסיון תיקון נוסף דרך Perplexity להחזיר JSON תקני בלבד
 async function repairJsonWithPerplexity(badText: string, schemaHint?: string): Promise<string> {
-  if (!PPLX_KEY) return badText; // אין טעם לנסות
+  if (!PPLX_KEY) return badText;
   const repairSystem = `
-You must output STRICT JSON ONLY. No markdown fences, no commentary.
-If the input contains JSON with mistakes (quotes/commas), fix it to be valid JSON.
-${schemaHint ? `The JSON must match this structure:\n${schemaHint}` : ""}
+Return STRICT JSON ONLY. No markdown, no fences, no prose.
+If input contains invalid JSON (quotes/commas/unquoted keys), fix to valid JSON.
+The JSON MUST match exactly this structure and keys only:
+${schemaHint ?? ""}
 `.trim();
 
   const msgs: ChatMsg[] = [
@@ -211,7 +219,7 @@ app.post("/api/search", async (c) => {
     // בחירת ספק
     const provider = pickProvider(USE_WEB as "none" | "perplexity", requestedProvider || undefined);
 
-    // אם ביקשו אינטרנט ואין KEY — נודיע ולא ניפול בשקט
+    // אם ביקשו אינטרנט ואין KEY — תחזיר הודעה ברורה
     if (provider === "perplexity" && !PPLX_KEY) {
       return c.json({
         status: "error",
@@ -287,11 +295,7 @@ User list (free text, commas optional): ${list_text}
     if (provider === "perplexity") {
       rawText = await callPerplexity(messages);
 
-      // נסיון להוציא JSON תקני
-      let coerced = coerceToJsonStrict(rawText);
-      if (!coerced.ok) {
-        // Repair אחד מכריח JSON בלבד
-        const schemaHint = `
+      const schemaHint = `
 {
   "status":"ok",
   "results":[
@@ -319,16 +323,28 @@ User list (free text, commas optional): ${list_text}
   ]
 }`.trim();
 
-        const repaired = await repairJsonWithPerplexity(rawText, schemaHint);
-        coerced = coerceToJsonStrict(repaired);
-        if (!coerced.ok) {
-          return c.json({
-            status: "error",
-            message: "LLM returned invalid JSON (perplexity)",
-            details: coerced.error,
-            raw_preview: String(rawText).slice(0, 1200)
-          }, 502);
-        }
+      // 1) Sanitizer מקומי
+      let coerced = coerceToJsonStrict(rawText);
+
+      // 2) Repair #1 אם נכשל
+      if (!coerced.ok) {
+        const repaired1 = await repairJsonWithPerplexity(rawText, schemaHint);
+        coerced = coerceToJsonStrict(repaired1);
+      }
+
+      // 3) Repair #2 אם עדיין נכשל (לעתים עוזר)
+      if (!coerced.ok) {
+        const repaired2 = await repairJsonWithPerplexity(coerced.error + "\n\n" + rawText, schemaHint);
+        coerced = coerceToJsonStrict(repaired2);
+      }
+
+      if (!coerced.ok) {
+        return c.json({
+          status: "error",
+          message: "LLM returned invalid JSON (perplexity)",
+          details: coerced.error,
+          raw_preview: String(rawText).slice(0, 1400)
+        }, 502);
       }
       text1 = coerced.text;
 
@@ -364,7 +380,7 @@ Return ONLY JSON.
       if (provider === "perplexity") raw2 = await callPerplexity(fixMessages);
       else raw2 = await callOpenAI(fixMessages);
 
-      // החלת coercion במסלול Perplexity בפאס התיקון גם כן
+      // החלת coercion בפאס התיקון במסלול Perplexity
       let text2 = raw2;
       if (provider === "perplexity") {
         const c2 = coerceToJsonStrict(raw2);
@@ -390,7 +406,6 @@ Return ONLY JSON.
       status: "ok",
       provider,
       results: data.results,
-      // דיבאג אופציונלי – נחמד לזמן פיתוח:
       // debug_routing: {
       //   requested: requestedProvider || null,
       //   selected: provider,
