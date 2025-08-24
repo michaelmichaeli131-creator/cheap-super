@@ -1,16 +1,27 @@
 // server_deno.ts
-// Deno Deploy + Hono (npm) + Google Gemini (Structured Output only, NO source restrictions)
+// Deno Deploy + Hono (npm) + OpenAI (Responses API) + Google Gemini (Structured Output)
+// בחירת ספק: OpenAI/Gemini לפי body.provider או ברירת מחדל מה-ENV. אין fallback אוטומטי.
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { serveStatic } from "npm:hono/serve-static";
+import OpenAI from "npm:openai";
 import { GoogleGenerativeAI, SchemaType } from "npm:@google/generative-ai";
 
-// ===== ENV =====
+// ====== ENV ======
+const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
+
 const GEMINI_KEY   = Deno.env.get("GEMINI_API_KEY") || "";
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-pro-002";
 
-// ===== APP / CLIENT =====
+// שליטה בברירת המחדל והאם לאפשר ללקוח לבחור ספק:
+const DEFAULT_PROVIDER = (Deno.env.get("DEFAULT_PROVIDER") || "openai")
+  .toLowerCase() as "openai" | "gemini";
+const ALLOW_PROVIDER_OVERRIDE = (Deno.env.get("ALLOW_PROVIDER_OVERRIDE") || "true")
+  .toLowerCase() === "true";
+
+// ====== APP / CLIENTS ======
 const app = new Hono();
 app.use("/api/*", cors({
   origin: "*",
@@ -18,12 +29,12 @@ app.use("/api/*", cors({
   allowHeaders: ["Content-Type","Authorization"],
 }));
 
-if (!GEMINI_KEY) {
-  console.warn("[WARN] Missing GEMINI_API_KEY — server will return 500 on /api/search");
-}
-const genAI = new GoogleGenerativeAI(GEMINI_KEY);
+const openai = OPENAI_KEY ? new OpenAI({ apiKey: OPENAI_KEY }) : null;
+const genAI  = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
 
-// ===== Utils =====
+// ====== Utils ======
+type ChatMsg = { role: "system" | "user"; content: string };
+
 function extractJsonBlock(s: string): string {
   const start = s.indexOf("{"); const end = s.lastIndexOf("}");
   return (start>=0 && end>start) ? s.slice(start,end+1) : s.trim();
@@ -31,10 +42,46 @@ function extractJsonBlock(s: string): string {
 function safeParse<T=unknown>(t: string): {ok:true; data:T}|{ok:false; error:string} {
   try { return { ok:true, data: JSON.parse(t) as T }; } catch(e){ return { ok:false, error: (e as Error).message || "JSON parse error" }; }
 }
-// מחירי sanity בלבד כדי שלא נציג 0 כמחיר אמיתי
+// sanity קטן למחירים — לא מציגים 0/ערך לא סביר כמחיר אמיתי
 function sanePrice(n:number|null|undefined){ return typeof n==="number" && isFinite(n) && n>0 && n<500; }
+function pickProvider(def:"openai"|"gemini", req?:string): "openai"|"gemini" {
+  if (!ALLOW_PROVIDER_OVERRIDE) return def;
+  const r = String(req||"").toLowerCase();
+  return (r==="gemini" || r==="openai") ? (r as any) : def;
+}
 
-// ===== Schema (Structured Output) =====
+// --- תיקון צורה לתשובות “קצת” שונות ---
+function looksLikeStoreArray(x:any): boolean {
+  return Array.isArray(x) && x.length>0 && typeof x[0] === "object";
+}
+/** ממיר תשובות נפוצות למבנה: {status:"ok", results:[...] } */
+function coerceToResultsShape(data:any){
+  if (!data || typeof data !== "object") {
+    if (Array.isArray(data)) return { status:"ok", results:data };
+    return null;
+  }
+  if (Array.isArray(data.results)) {
+    if (!data.status) data.status = "ok";
+    return data;
+  }
+  if (looksLikeStoreArray((data as any).stores)) return { status:"ok", results:(data as any).stores };
+  if (looksLikeStoreArray((data as any).items))  return { status:"ok", results:(data as any).items  };
+  if (looksLikeStoreArray((data as any).data))   return { status:"ok", results:(data as any).data   };
+  if (looksLikeStoreArray((data as any).output)) return { status:"ok", results:(data as any).output };
+
+  const k = Object.keys(data).find(key => looksLikeStoreArray((data as any)[key]));
+  if (k) return { status:"ok", results:(data as any)[k] };
+  return null;
+}
+
+// ====== OpenAI ======
+async function callOpenAI(messages: ChatMsg[]): Promise<string> {
+  if (!openai) throw new Error("Missing OPENAI_API_KEY");
+  const resp = await openai.responses.create({ model: OPENAI_MODEL, input: messages });
+  return resp.output_text ?? "";
+}
+
+// ====== Gemini (Structured Output) ======
 const SearchResultsSchema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -64,9 +111,9 @@ const SearchResultsSchema = {
                 match_confidence: { type: SchemaType.NUMBER },
                 substitution: { type: SchemaType.BOOLEAN },
                 notes: { type: SchemaType.STRING },
-                price_source: { type: SchemaType.STRING },     // לא מגבילים מקור
-                product_url: { type: SchemaType.STRING },      // יכול להיות מכל אתר
-                source_domain: { type: SchemaType.STRING },    // לא בודקים מול allowlist
+                price_source: { type: SchemaType.STRING },    // חופשי
+                product_url: { type: SchemaType.STRING },     // חופשי
+                source_domain: { type: SchemaType.STRING },   // חופשי
                 last_checked: { type: SchemaType.STRING }
               },
               required: ["name","brand","quantity","line_total","match_confidence","substitution","notes","price_source","product_url","source_domain","last_checked"]
@@ -81,9 +128,8 @@ const SearchResultsSchema = {
   required: ["status","results"]
 } as const;
 
-// ===== Gemini call (Structured JSON only) =====
 async function callGeminiStructured(systemPrompt: string, userPrompt: string): Promise<string> {
-  if (!GEMINI_KEY) throw new Error("Missing GEMINI_API_KEY");
+  if (!genAI) throw new Error("Missing GEMINI_API_KEY");
   const model = genAI.getGenerativeModel({
     model: GEMINI_MODEL,
     generationConfig: {
@@ -91,17 +137,21 @@ async function callGeminiStructured(systemPrompt: string, userPrompt: string): P
       responseSchema: SearchResultsSchema as any,
     },
   });
-  const content = `${systemPrompt}\n\n${userPrompt}`.trim();
-  const res = await model.generateContent(content); // אין role/parts — מחרוזת אחת
+  const content = `${systemPrompt}\n\n${userPrompt}`.trim(); // ללא role/parts
+  const res = await model.generateContent(content);
   return res.response?.text?.() ?? "";
 }
 
-// ===== API =====
+// ====== API ======
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
+    default_provider: DEFAULT_PROVIDER,
+    allow_provider_override: ALLOW_PROVIDER_OVERRIDE,
+    openai_model: OPENAI_MODEL,
     gemini_model: GEMINI_MODEL,
-    has_gemini_key: !!GEMINI_KEY
+    has_openai_key: !!OPENAI_KEY,
+    has_gemini_key: !!GEMINI_KEY,
   })
 );
 
@@ -111,23 +161,30 @@ app.post("/api/search", async (c) => {
     const address   = String(body?.address ?? "").trim();
     const radius_km = Number(body?.radius_km ?? 0);
     const list_text = String(body?.list_text ?? "").trim();
+    const requested = String(body?.provider ?? "").toLowerCase();
 
-    const needed:string[]=[]; if(!address)needed.push("address"); if(!radius_km||isNaN(radius_km))needed.push("radius_km"); if(!list_text)needed.push("list_text");
+    const needed:string[]=[];
+    if(!address) needed.push("address");
+    if(!radius_km || isNaN(radius_km)) needed.push("radius_km");
+    if(!list_text) needed.push("list_text");
     if(needed.length) return c.json({ status:"need_input", needed }, 400);
-    if(!GEMINI_KEY)   return c.json({ status:"error", message:"GEMINI_API_KEY is missing" }, 500);
 
-    // === PROMPT ללא מגבלות מקור ===
+    const provider = pickProvider(DEFAULT_PROVIDER, requested);
+
+    // ---- Prompt קשיח שמכריח JSON תקני {status, results} ----
     const system = `
-You are an Israeli grocery price comparison agent.
-Goal: find the CHEAPEST basket for the user's items within the given radius from the given address.
+You are an Israeli grocery price-comparison agent.
+Output MUST be ONLY strict JSON (no markdown, no explanations).
+The ONLY valid top-level structure is:
+{ "status": "ok", "results": [ /* array of stores */ ] }
 
-Guidelines (no hard source restrictions):
-- Use any sources you deem reliable (e.g., supermarket sites, online stores, comparison services, and other up-to-date pages).
-- Each basket item MUST include a non-empty brand (e.g., מי עדן, קלסברג, תנובה). If user request is generic, choose a common brand and add a short note.
-- If you cannot find a current unit price, set unit_price = null and add a short note (do not guess).
-- Return 3–4 stores sorted by total_price (cheapest first).
-- Currency must be "₪".
-- Return ONLY strict JSON that exactly matches the schema.
+Guidelines:
+- Find 3–4 stores within the given radius that can fulfill the user's basket.
+- Each basket item MUST include a non-empty brand (e.g., מי עדן, קלסברג, תנובה). If the user is generic, choose a common brand and add a short note.
+- If a current unit price cannot be verified, set unit_price = null and add a short note (do not guess).
+- "currency" must be "₪".
+- Sort stores by total_price ascending (cheapest first).
+- Keep text concise. Do not include any prose outside the JSON fields.
 `.trim();
 
     const user = `
@@ -135,29 +192,54 @@ Address: ${address}
 Radius_km: ${radius_km}
 User list (free text; commas optional): ${list_text}
 
-Notes:
-- Prefer recent prices when possible.
-- If some items are unavailable, offer sensible substitutions and mark "substitution": true with a short note.
-- Keep the output terse; do not include any prose outside the JSON fields.
+Important:
+- If you would return an array directly, WRAP it as:
+  { "status": "ok", "results": [ ... ] }
 `.trim();
 
-    // ---- Gemini only ----
-    const rawText = await callGeminiStructured(system, user);
+    // ---- קריאה לספק הנבחר (ללא fallback) ----
+    let rawText = "";
+    if (provider === "gemini") {
+      if (!GEMINI_KEY) return c.json({ status:"error", message:"GEMINI_API_KEY is missing" }, 500);
+      rawText = await callGeminiStructured(system, user);       // מחזיר JSON לפי schema
+    } else {
+      if (!OPENAI_KEY) return c.json({ status:"error", message:"OPENAI_API_KEY is missing" }, 500);
+      const messages: ChatMsg[] = [{ role:"system", content: system }, { role:"user", content: user }];
+      const raw = await callOpenAI(messages);
+      rawText = extractJsonBlock(raw);                          // מחלץ בלוק JSON מהטקסט
+    }
 
-    const parsed = safeParse<any>(extractJsonBlock(rawText));
+    // ---- Parse + Coerce ----
+    const parsed = safeParse<any>(rawText);
     if (!parsed.ok) {
-      return c.json({ status:"error", message:"LLM returned non-JSON text", details: parsed.error, raw_preview: String(rawText).slice(0,1200) }, 502);
+      return c.json({
+        status: "error",
+        message: "LLM returned non-JSON text",
+        details: parsed.error,
+        raw_preview: String(rawText).slice(0, 1200),
+        provider
+      }, 502);
     }
     let data = parsed.data;
 
-    if (data?.status !== "ok" || !Array.isArray(data?.results)) {
-      return c.json({ status:"no_results", provider:"gemini", message:"Unexpected shape from LLM", raw: data }, 200);
+    // במידה וה-LLM החזיר מערך/מפתח אחר — נרמול לצורה התקנית
+    if (!(data && data.status === "ok" && Array.isArray(data.results))) {
+      const coerced = coerceToResultsShape(data);
+      if (coerced) data = coerced;
     }
 
-    // === Normalize (sanity בלבד) ===
+    if (!(data && data.status === "ok" && Array.isArray(data.results))) {
+      return c.json({
+        status: "no_results",
+        provider,
+        message: "Unexpected shape from LLM",
+        raw: data
+      }, 200);
+    }
+
+    // ---- Normalize (sanity למחירים, חישוב סכום, דירוג) ----
     for (const r of data.results) {
       for (const b of (r.basket || [])) {
-        // רק sanity למחיר — לא מסננים לפי מקור/דומיין
         if (!sanePrice(b.unit_price)) {
           b.unit_price = null;
           b.line_total = 0;
@@ -165,7 +247,6 @@ Notes:
         } else {
           b.line_total = +(Number(b.unit_price) * Number(b.quantity || 1)).toFixed(2);
         }
-        // הבטחת מותג לא ריק (כפי שביקשתם)
         if (typeof b.brand !== "string" || !b.brand.trim()) {
           b.brand = "מותג נפוץ";
           b.notes = (b.notes || "") + " • הוסף מותג כללי כי לא צוין";
@@ -176,7 +257,7 @@ Notes:
     data.results.sort((a:any,b:any)=> (a.total_price||0)-(b.total_price||0));
     data.results.forEach((r:any,i:number)=> r.rank=i+1);
 
-    return c.json({ status:"ok", provider:"gemini", results: data.results }, 200);
+    return c.json({ status:"ok", provider, results: data.results }, 200);
 
   } catch (err) {
     console.error(err);
@@ -184,7 +265,7 @@ Notes:
   }
 });
 
-// ===== Static frontend =====
+// ====== Static frontend ======
 app.use("/assets/*", serveStatic({ root: "./public" }));
 app.use("/img/*",    serveStatic({ root: "./public" }));
 app.use("/public/*", serveStatic({ root: "./public" }));
@@ -197,7 +278,6 @@ app.get("/", async (c) => {
     return c.newResponse(FALLBACK_HTML, 200, { "content-type": "text/html; charset=utf-8" });
   }
 });
-
 app.notFound(async (c) => {
   try {
     const html = await Deno.readTextFile("./public/index.html");
@@ -209,11 +289,11 @@ app.notFound(async (c) => {
 
 export default app;
 
-// ===== Fallback inline HTML (דיבאג מהיר) =====
+// ====== Fallback inline HTML (דיבאג מהיר) ======
 const FALLBACK_HTML = `<!doctype html>
 <html lang="he" dir="rtl">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CartCompare AI (Fallback)</title>
+<title>CartCompare AI — Fallback</title>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f9ff;color:#0d1321;margin:0}
   .wrap{max-width:440px;margin:0 auto;padding:16px}
@@ -226,11 +306,17 @@ const FALLBACK_HTML = `<!doctype html>
   .muted{color:#6b7280;font-size:12px}
 </style>
 <div class="wrap">
-  <h2>CartCompare AI — Fallback (Gemini only)</h2>
+  <h2>CartCompare AI — Fallback</h2>
   <div class="box">
-    <div class="input"><label>כתובת</label><input id="addr" placeholder="תל אביב, בן יהודה 10"></div>
+    <div class="input"><label>ספק</label>
+      <select id="provider">
+        <option value="openai">OpenAI (GPT-5)</option>
+        <option value="gemini">Gemini (1.5 Pro)</option>
+      </select>
+    </div>
+    <div class="input"><label>כתובת</label><input id="addr" placeholder="חולון, סוקולוב 10"></div>
     <div class="input"><label>רדיוס (ק״מ)</label><input id="rad" type="number" value="5"></div>
-    <div class="input"><label>רשימת קניות</label><textarea id="lst" rows="4" placeholder="שישיית מים, חלב 3%, ספגטי"></textarea></div>
+    <div class="input"><label>רשימת קניות</label><textarea id="lst" rows="4" placeholder="שישיית מי עדן, חזה עוף 1 ק\"ג, 2 בירות קלסברג"></textarea></div>
     <button class="btn" onclick="go()">חפש</button>
   </div>
   <div id="out" style="margin-top:12px"></div>
@@ -241,11 +327,17 @@ async function go(){
   out.innerHTML='טוען...';
   try{
     const res=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({address:addr.value.trim(),radius_km:Number(rad.value||5),list_text:lst.value.trim()})});
+      body:JSON.stringify({
+        address:addr.value.trim(),
+        radius_km:Number(rad.value||5),
+        list_text:lst.value.trim(),
+        provider:document.getElementById('provider').value
+      })});
     const data=await res.json();
     if(!res.ok){ out.innerHTML='שגיאת שרת: '+(data.message||res.status); return; }
     if(data.status!=='ok'){ out.innerHTML='אין תוצאות: '+(data.message||''); return; }
     out.innerHTML =
+      '<div class="muted">Provider: '+(data.provider||'')+'</div>' +
       data.results.map(r=>{
         const total=Number(r.total_price||0).toFixed(2);
         const rows=(r.basket||[]).map(b=>{
@@ -261,7 +353,7 @@ async function go(){
       }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
-function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
+function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
 function escapeAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 </script>
 </html>`;
