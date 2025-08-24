@@ -1,5 +1,5 @@
 // server_deno.ts
-// Deno Deploy + Hono (npm) + Google Gemini (Structured Output only, no fallback)
+// Deno Deploy + Hono (npm) + Google Gemini (Structured Output only, NO source restrictions)
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -9,16 +9,6 @@ import { GoogleGenerativeAI, SchemaType } from "npm:@google/generative-ai";
 // ===== ENV =====
 const GEMINI_KEY   = Deno.env.get("GEMINI_API_KEY") || "";
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-pro-002";
-
-// דומיינים מותרים למקורות מחירים
-const ALLOW_DOMAINS = (Deno.env.get("ALLOW_DOMAINS") || `
-shufersal.co.il
-ramilevy.co.il
-victoryonline.co.il
-yohananof.co.il
-tivtaam.co.il
-zap.co.il
-`.trim()).split(/\s+/).map(s=>s.trim().toLowerCase()).filter(Boolean);
 
 // ===== APP / CLIENT =====
 const app = new Hono();
@@ -41,11 +31,8 @@ function extractJsonBlock(s: string): string {
 function safeParse<T=unknown>(t: string): {ok:true; data:T}|{ok:false; error:string} {
   try { return { ok:true, data: JSON.parse(t) as T }; } catch(e){ return { ok:false, error: (e as Error).message || "JSON parse error" }; }
 }
-function domainAllowed(domain:string): boolean {
-  const d=(domain||"").toLowerCase();
-  return ALLOW_DOMAINS.some(x => d===x || d.endsWith("."+x));
-}
-function sanePrice(n:number|null|undefined){ return typeof n==="number" && isFinite(n) && n>=0.5 && n<=200; }
+// מחירי sanity בלבד כדי שלא נציג 0 כמחיר אמיתי
+function sanePrice(n:number|null|undefined){ return typeof n==="number" && isFinite(n) && n>0 && n<500; }
 
 // ===== Schema (Structured Output) =====
 const SearchResultsSchema = {
@@ -77,9 +64,9 @@ const SearchResultsSchema = {
                 match_confidence: { type: SchemaType.NUMBER },
                 substitution: { type: SchemaType.BOOLEAN },
                 notes: { type: SchemaType.STRING },
-                price_source: { type: SchemaType.STRING, enum: ["retailer","aggregator","catalog"] },
-                product_url: { type: SchemaType.STRING },
-                source_domain: { type: SchemaType.STRING },
+                price_source: { type: SchemaType.STRING },     // לא מגבילים מקור
+                product_url: { type: SchemaType.STRING },      // יכול להיות מכל אתר
+                source_domain: { type: SchemaType.STRING },    // לא בודקים מול allowlist
                 last_checked: { type: SchemaType.STRING }
               },
               required: ["name","brand","quantity","line_total","match_confidence","substitution","notes","price_source","product_url","source_domain","last_checked"]
@@ -114,8 +101,7 @@ app.get("/api/health", (c) =>
   c.json({
     ok: true,
     gemini_model: GEMINI_MODEL,
-    has_gemini_key: !!GEMINI_KEY,
-    allow_domains: ALLOW_DOMAINS
+    has_gemini_key: !!GEMINI_KEY
   })
 );
 
@@ -130,50 +116,18 @@ app.post("/api/search", async (c) => {
     if(needed.length) return c.json({ status:"need_input", needed }, 400);
     if(!GEMINI_KEY)   return c.json({ status:"error", message:"GEMINI_API_KEY is missing" }, 500);
 
+    // === PROMPT ללא מגבלות מקור ===
     const system = `
-You are a price-comparison assistant for Israel. Return ONLY strict JSON matching the schema below. No markdown, no prose.
-Hard requirements:
-- Every price MUST be backed by a valid URL of: retailer site, recognized price-aggregator, or product/catalog page of the retailer.
-- Do NOT use news/blogs/forums/social media for pricing.
-- If no acceptable source found: set "unit_price": null and explain briefly in "notes".
-- Always include: "price_source" ∈ {"retailer","aggregator","catalog"}, "product_url", "source_domain", and "last_checked" (UTC ISO-8601 date of today).
-- "currency" must be "₪".
-- Every basket item MUST include non-empty "brand". If the item is generic, choose a common Israeli brand and explain briefly in notes.
-- Output 3–4 stores sorted by total_price ascending (cheapest → expensive). Distances in km. Prefer mainstream brands.
-- Return ONLY JSON that can be JSON.parsed.
+You are an Israeli grocery price comparison agent.
+Goal: find the CHEAPEST basket for the user's items within the given radius from the given address.
 
-JSON schema EXACTLY:
-{
-  "status": "ok",
-  "results": [
-    {
-      "rank": 1,
-      "store_name": "string",
-      "address": "string",
-      "distance_km": number,
-      "currency": "₪",
-      "total_price": number,
-      "match_overall": number,
-      "basket": [
-        {
-          "name": "string",
-          "brand": "string",
-          "quantity": number,
-          "unit_price": number|null,
-          "line_total": number,
-          "match_confidence": number,
-          "substitution": boolean,
-          "notes": "string",
-          "price_source": "retailer"|"aggregator"|"catalog",
-          "product_url": "https://...",
-          "source_domain": "example.co.il",
-          "last_checked": "2025-08-23"
-        }
-      ],
-      "sources": ["https://...", "https://..."]
-    }
-  ]
-}
+Guidelines (no hard source restrictions):
+- Use any sources you deem reliable (e.g., supermarket sites, online stores, comparison services, and other up-to-date pages).
+- Each basket item MUST include a non-empty brand (e.g., מי עדן, קלסברג, תנובה). If user request is generic, choose a common brand and add a short note.
+- If you cannot find a current unit price, set unit_price = null and add a short note (do not guess).
+- Return 3–4 stores sorted by total_price (cheapest first).
+- Currency must be "₪".
+- Return ONLY strict JSON that exactly matches the schema.
 `.trim();
 
     const user = `
@@ -181,10 +135,10 @@ Address: ${address}
 Radius_km: ${radius_km}
 User list (free text; commas optional): ${list_text}
 
-Additional instructions:
-- Search first on official Israeli retailers' product pages or known price aggregators.
-- If no reliable price found, set unit_price=null (do not guess) and explain in notes.
-- Return 3–4 relevant stores, sorted by total_price.
+Notes:
+- Prefer recent prices when possible.
+- If some items are unavailable, offer sensible substitutions and mark "substitution": true with a short note.
+- Keep the output terse; do not include any prose outside the JSON fields.
 `.trim();
 
     // ---- Gemini only ----
@@ -200,21 +154,22 @@ Additional instructions:
       return c.json({ status:"no_results", provider:"gemini", message:"Unexpected shape from LLM", raw: data }, 200);
     }
 
-    // Validate & cleanup on server side
+    // === Normalize (sanity בלבד) ===
     for (const r of data.results) {
       for (const b of (r.basket || [])) {
-        const domain = (b.source_domain || "").toLowerCase();
-        if (!domainAllowed(domain)) {
-          b.unit_price = null;
-          b.notes = (b.notes || "") + " • מקור לא ברשימת האתרים המותרים";
-        }
+        // רק sanity למחיר — לא מסננים לפי מקור/דומיין
         if (!sanePrice(b.unit_price)) {
           b.unit_price = null;
-          b.notes = (b.notes || "") + " • מחיר לא נראה תקין — סומן כ-null";
+          b.line_total = 0;
+          b.notes = (b.notes || "") + " • מחיר לא נמצא/לא הגיוני — סומן כ-null";
+        } else {
+          b.line_total = +(Number(b.unit_price) * Number(b.quantity || 1)).toFixed(2);
         }
-        b.line_total = (typeof b.unit_price === "number")
-          ? +(Number(b.unit_price) * Number(b.quantity || 1)).toFixed(2)
-          : 0;
+        // הבטחת מותג לא ריק (כפי שביקשתם)
+        if (typeof b.brand !== "string" || !b.brand.trim()) {
+          b.brand = "מותג נפוץ";
+          b.notes = (b.notes || "") + " • הוסף מותג כללי כי לא צוין";
+        }
       }
       r.total_price = +((r.basket || []).reduce((s:number,b:any)=> s + (typeof b.unit_price==="number" ? b.unit_price*(b.quantity||1) : 0), 0).toFixed(2));
     }
@@ -225,7 +180,6 @@ Additional instructions:
 
   } catch (err) {
     console.error(err);
-    // מציגים הודעת שגיאה ברורה ללקוח (ללא fallback)
     return c.json({ status:"error", message:String(err) }, 500);
   }
 });
@@ -291,7 +245,7 @@ async function go(){
     const data=await res.json();
     if(!res.ok){ out.innerHTML='שגיאת שרת: '+(data.message||res.status); return; }
     if(data.status!=='ok'){ out.innerHTML='אין תוצאות: '+(data.message||''); return; }
-    out.innerHTML=
+    out.innerHTML =
       data.results.map(r=>{
         const total=Number(r.total_price||0).toFixed(2);
         const rows=(r.basket||[]).map(b=>{
@@ -307,7 +261,7 @@ async function go(){
       }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
-function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
+function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
 function escapeAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 </script>
 </html>`;
