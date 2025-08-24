@@ -1,6 +1,6 @@
 // server_deno.ts
 // Deno Deploy + Hono (npm) + OpenAI (Responses API) + Google Gemini (Structured Output)
-// בחירת ספק: OpenAI/Gemini לפי body.provider או ברירת מחדל מה-ENV. אין fallback אוטומטי.
+// בחירת ספק: OpenAI/Gemini לפי body.provider או ברירת מחדל מה-ENV. אין fallback.
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -8,20 +8,17 @@ import { serveStatic } from "npm:hono/serve-static";
 import OpenAI from "npm:openai";
 import { GoogleGenerativeAI, SchemaType } from "npm:@google/generative-ai";
 
-// ====== ENV ======
+// ===== ENV =====
 const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
 
 const GEMINI_KEY   = Deno.env.get("GEMINI_API_KEY") || "";
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-pro-002";
 
-// שליטה בברירת המחדל והאם לאפשר ללקוח לבחור ספק:
-const DEFAULT_PROVIDER = (Deno.env.get("DEFAULT_PROVIDER") || "openai")
-  .toLowerCase() as "openai" | "gemini";
-const ALLOW_PROVIDER_OVERRIDE = (Deno.env.get("ALLOW_PROVIDER_OVERRIDE") || "true")
-  .toLowerCase() === "true";
+const DEFAULT_PROVIDER = (Deno.env.get("DEFAULT_PROVIDER") || "openai").toLowerCase() as "openai" | "gemini";
+const ALLOW_PROVIDER_OVERRIDE = (Deno.env.get("ALLOW_PROVIDER_OVERRIDE") || "true").toLowerCase() === "true";
 
-// ====== APP / CLIENTS ======
+// ===== APP / CLIENTS =====
 const app = new Hono();
 app.use("/api/*", cors({
   origin: "*",
@@ -32,7 +29,7 @@ app.use("/api/*", cors({
 const openai = OPENAI_KEY ? new OpenAI({ apiKey: OPENAI_KEY }) : null;
 const genAI  = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
 
-// ====== Utils ======
+// ===== Utils =====
 type ChatMsg = { role: "system" | "user"; content: string };
 
 function extractJsonBlock(s: string): string {
@@ -42,19 +39,16 @@ function extractJsonBlock(s: string): string {
 function safeParse<T=unknown>(t: string): {ok:true; data:T}|{ok:false; error:string} {
   try { return { ok:true, data: JSON.parse(t) as T }; } catch(e){ return { ok:false, error: (e as Error).message || "JSON parse error" }; }
 }
-// sanity קטן למחירים — לא מציגים 0/ערך לא סביר כמחיר אמיתי
-function sanePrice(n:number|null|undefined){ return typeof n==="number" && isFinite(n) && n>0 && n<500; }
 function pickProvider(def:"openai"|"gemini", req?:string): "openai"|"gemini" {
   if (!ALLOW_PROVIDER_OVERRIDE) return def;
   const r = String(req||"").toLowerCase();
   return (r==="gemini" || r==="openai") ? (r as any) : def;
 }
 
-// --- תיקון צורה לתשובות “קצת” שונות ---
+// תיקון צורה לתשובות LLM “שונות מעט”
 function looksLikeStoreArray(x:any): boolean {
   return Array.isArray(x) && x.length>0 && typeof x[0] === "object";
 }
-/** ממיר תשובות נפוצות למבנה: {status:"ok", results:[...] } */
 function coerceToResultsShape(data:any){
   if (!data || typeof data !== "object") {
     if (Array.isArray(data)) return { status:"ok", results:data };
@@ -74,14 +68,27 @@ function coerceToResultsShape(data:any){
   return null;
 }
 
-// ====== OpenAI ======
+// סינונים/ולידציה
+function isPlaceholderDomain(d:string){
+  const x = (d||"").toLowerCase();
+  return !x || x==="example.com" || x.endsWith(".example") || x==="localhost" || x==="127.0.0.1";
+}
+function isLikelyProductUrl(u:string){
+  try{
+    const url = new URL(u);
+    return /^https?:$/.test(url.protocol) && !!url.hostname && url.pathname.length>1;
+  }catch{ return false; }
+}
+const MIN_VALID_ITEMS_PER_STORE = 2; // מינימום פריטים עם מחיר תקין כדי לשמור חנות
+
+// ===== OpenAI =====
 async function callOpenAI(messages: ChatMsg[]): Promise<string> {
   if (!openai) throw new Error("Missing OPENAI_API_KEY");
   const resp = await openai.responses.create({ model: OPENAI_MODEL, input: messages });
   return resp.output_text ?? "";
 }
 
-// ====== Gemini (Structured Output) ======
+// ===== Gemini (Structured Output) =====
 const SearchResultsSchema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -111,9 +118,9 @@ const SearchResultsSchema = {
                 match_confidence: { type: SchemaType.NUMBER },
                 substitution: { type: SchemaType.BOOLEAN },
                 notes: { type: SchemaType.STRING },
-                price_source: { type: SchemaType.STRING },    // חופשי
-                product_url: { type: SchemaType.STRING },     // חופשי
-                source_domain: { type: SchemaType.STRING },   // חופשי
+                price_source: { type: SchemaType.STRING },
+                product_url: { type: SchemaType.STRING },
+                source_domain: { type: SchemaType.STRING },
                 last_checked: { type: SchemaType.STRING }
               },
               required: ["name","brand","quantity","line_total","match_confidence","substitution","notes","price_source","product_url","source_domain","last_checked"]
@@ -142,7 +149,7 @@ async function callGeminiStructured(systemPrompt: string, userPrompt: string): P
   return res.response?.text?.() ?? "";
 }
 
-// ====== API ======
+// ===== API =====
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
@@ -171,21 +178,35 @@ app.post("/api/search", async (c) => {
 
     const provider = pickProvider(DEFAULT_PROVIDER, requested);
 
-    // ---- Prompt קשיח שמכריח JSON תקני {status, results} ----
-    const system = `
+    // ===== פרומפטים מחוזקים לכל ספק =====
+    const BASE_SYSTEM = `
 You are an Israeli grocery price-comparison agent.
-Output MUST be ONLY strict JSON (no markdown, no explanations).
-The ONLY valid top-level structure is:
-{ "status": "ok", "results": [ /* array of stores */ ] }
+Output MUST be ONLY strict JSON (no markdown).
+Top-level shape MUST be:
+{ "status": "ok", "results": [ ... ] }
 
-Guidelines:
-- Find 3–4 stores within the given radius that can fulfill the user's basket.
-- Each basket item MUST include a non-empty brand (e.g., מי עדן, קלסברג, תנובה). If the user is generic, choose a common brand and add a short note.
-- If a current unit price cannot be verified, set unit_price = null and add a short note (do not guess).
-- "currency" must be "₪".
-- Sort stores by total_price ascending (cheapest first).
-- Keep text concise. Do not include any prose outside the JSON fields.
+Rules:
+- Return 3–4 stores within the given radius, sorted by total_price ascending.
+- Each basket item MUST include a non-empty brand (e.g., מי עדן, קלסברג, תנובה). If user input is generic, pick a common Israeli brand and add a short note.
+- If a current unit price cannot be verified from a real product page, set unit_price = null and add a short note (do not guess).
+- Currency must be "₪".
 `.trim();
+
+    const OPENAI_EXTRA = `
+STRICT: Never output unit_price = 0. If unsure, set unit_price = null and explain briefly in "notes".
+Do not use placeholders or vague wording like "price may vary", "about", "~".
+Every product_url must be a real product page (no example.com, no localhost).
+`.trim();
+
+    const GEMINI_EXTRA = `
+Do not use placeholder domains (e.g., example.com). Provide real product URLs only.
+Avoid vague phrases like "price may vary" — either provide a concrete current price or set unit_price = null with a short note.
+`.trim();
+
+    const system =
+      provider === "openai"
+        ? `${BASE_SYSTEM}\n\n${OPENAI_EXTRA}`
+        : `${BASE_SYSTEM}\n\n${GEMINI_EXTRA}`;
 
     const user = `
 Address: ${address}
@@ -197,19 +218,19 @@ Important:
   { "status": "ok", "results": [ ... ] }
 `.trim();
 
-    // ---- קריאה לספק הנבחר (ללא fallback) ----
+    // ===== קריאה לספק הנבחר (ללא fallback) =====
     let rawText = "";
     if (provider === "gemini") {
       if (!GEMINI_KEY) return c.json({ status:"error", message:"GEMINI_API_KEY is missing" }, 500);
-      rawText = await callGeminiStructured(system, user);       // מחזיר JSON לפי schema
+      rawText = await callGeminiStructured(system, user);
     } else {
       if (!OPENAI_KEY) return c.json({ status:"error", message:"OPENAI_API_KEY is missing" }, 500);
       const messages: ChatMsg[] = [{ role:"system", content: system }, { role:"user", content: user }];
       const raw = await callOpenAI(messages);
-      rawText = extractJsonBlock(raw);                          // מחלץ בלוק JSON מהטקסט
+      rawText = extractJsonBlock(raw);
     }
 
-    // ---- Parse + Coerce ----
+    // ===== Parse + Coerce =====
     const parsed = safeParse<any>(rawText);
     if (!parsed.ok) {
       return c.json({
@@ -222,42 +243,75 @@ Important:
     }
     let data = parsed.data;
 
-    // במידה וה-LLM החזיר מערך/מפתח אחר — נרמול לצורה התקנית
     if (!(data && data.status === "ok" && Array.isArray(data.results))) {
       const coerced = coerceToResultsShape(data);
       if (coerced) data = coerced;
     }
-
     if (!(data && data.status === "ok" && Array.isArray(data.results))) {
+      return c.json({ status: "no_results", provider, message: "Unexpected shape from LLM", raw: data }, 200);
+    }
+
+    // ===== Normalize & validate (מונע 0/פלייסהולדר/כתובת לא אמיתית) =====
+    const cleaned:any[] = [];
+    for (const r of (data.results || [])) {
+      let validCount = 0;
+
+      for (const b of (r.basket || [])) {
+        // 1) URL אמיתי + בלי placeholder domain
+        const urlOk = isLikelyProductUrl(b.product_url || "");
+        const placeholder = isPlaceholderDomain(b.source_domain || "");
+        if (!urlOk || placeholder) {
+          b.unit_price = null;
+          b.line_total = 0;
+          b.notes = (b.notes||"") + " • קישור לא תקין/placeholder — סומן כ-null";
+        }
+
+        // 2) מחיר אמיתי (לא 0/לא מופרך)
+        if (!(typeof b.unit_price==="number" && b.unit_price>0 && b.unit_price<500)) {
+          b.unit_price = null;
+          b.line_total = 0;
+          if (!/סומן כ-null/.test(b.notes||"")) {
+            b.notes = (b.notes||"") + " • מחיר לא נמצא/לא הגיוני — סומן כ-null";
+          }
+        } else {
+          b.line_total = +(Number(b.unit_price) * Number(b.quantity || 1)).toFixed(2);
+          validCount++;
+        }
+
+        // 3) מותג חובה
+        if (typeof b.brand !== "string" || !b.brand.trim()) {
+          b.brand = "מותג נפוץ";
+          b.notes = (b.notes||"") + " • הוסף מותג כללי כי לא צוין";
+        }
+
+        // 4) ניקוי ניסוחים מעורפלים
+        if (typeof b.notes === "string") {
+          b.notes = b.notes.replace(/price may vary|~|≈|about/gi, "").trim();
+        }
+      }
+
+      // דילוג על חנויות “ריקות”
+      if (validCount < MIN_VALID_ITEMS_PER_STORE) continue;
+
+      r.total_price = +((r.basket || [])
+        .reduce((s:number,b:any)=> s + (typeof b.unit_price==="number" ? b.unit_price*(b.quantity||1) : 0), 0)
+        .toFixed(2));
+
+      cleaned.push(r);
+    }
+
+    if (!cleaned.length) {
       return c.json({
-        status: "no_results",
+        status:"no_results",
         provider,
-        message: "Unexpected shape from LLM",
-        raw: data
+        message:"לא נמצאו חנויות עם מספיק מחירים תקפים. נסו להרחיב רדיוס, לציין מותג/נפח מדויק, או לשנות ניסוח."
       }, 200);
     }
 
-    // ---- Normalize (sanity למחירים, חישוב סכום, דירוג) ----
-    for (const r of data.results) {
-      for (const b of (r.basket || [])) {
-        if (!sanePrice(b.unit_price)) {
-          b.unit_price = null;
-          b.line_total = 0;
-          b.notes = (b.notes || "") + " • מחיר לא נמצא/לא הגיוני — סומן כ-null";
-        } else {
-          b.line_total = +(Number(b.unit_price) * Number(b.quantity || 1)).toFixed(2);
-        }
-        if (typeof b.brand !== "string" || !b.brand.trim()) {
-          b.brand = "מותג נפוץ";
-          b.notes = (b.notes || "") + " • הוסף מותג כללי כי לא צוין";
-        }
-      }
-      r.total_price = +((r.basket || []).reduce((s:number,b:any)=> s + (typeof b.unit_price==="number" ? b.unit_price*(b.quantity||1) : 0), 0).toFixed(2));
-    }
-    data.results.sort((a:any,b:any)=> (a.total_price||0)-(b.total_price||0));
-    data.results.forEach((r:any,i:number)=> r.rank=i+1);
+    cleaned.sort((a:any,b:any)=> (a.total_price||0)-(b.total_price||0));
+    cleaned.forEach((r:any,i:number)=> r.rank=i+1);
 
-    return c.json({ status:"ok", provider, results: data.results }, 200);
+    return c.json({ status:"ok", provider, results: cleaned }, 200);
 
   } catch (err) {
     console.error(err);
@@ -265,7 +319,7 @@ Important:
   }
 });
 
-// ====== Static frontend ======
+// ===== Static frontend =====
 app.use("/assets/*", serveStatic({ root: "./public" }));
 app.use("/img/*",    serveStatic({ root: "./public" }));
 app.use("/public/*", serveStatic({ root: "./public" }));
@@ -289,7 +343,7 @@ app.notFound(async (c) => {
 
 export default app;
 
-// ====== Fallback inline HTML (דיבאג מהיר) ======
+// ===== Fallback inline HTML (דיבאג מהיר) =====
 const FALLBACK_HTML = `<!doctype html>
 <html lang="he" dir="rtl">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -353,7 +407,7 @@ async function go(){
       }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
-function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
+function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
 function escapeAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 </script>
 </html>`;
