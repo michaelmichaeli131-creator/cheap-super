@@ -1,19 +1,16 @@
 // server_deno.ts
-// Deno Deploy + Hono (npm) + OpenAI (GPT-5) + Google Gemini (Structured Output)
+// Deno Deploy + Hono (npm) + Google Gemini (Structured Output only, no fallback)
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { serveStatic } from "npm:hono/serve-static";
-import OpenAI from "npm:openai";
 import { GoogleGenerativeAI, SchemaType } from "npm:@google/generative-ai";
 
 // ===== ENV =====
-const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
-const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5";
 const GEMINI_KEY   = Deno.env.get("GEMINI_API_KEY") || "";
-const ALLOW_PROVIDER_OVERRIDE = Deno.env.get("ALLOW_PROVIDER_OVERRIDE") === "true";
-const DEFAULT_PROVIDER = (Deno.env.get("DEFAULT_PROVIDER") || "openai").toLowerCase() as "openai" | "gemini";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-pro-002";
 
+// דומיינים מותרים למקורות מחירים
 const ALLOW_DOMAINS = (Deno.env.get("ALLOW_DOMAINS") || `
 shufersal.co.il
 ramilevy.co.il
@@ -23,15 +20,20 @@ tivtaam.co.il
 zap.co.il
 `.trim()).split(/\s+/).map(s=>s.trim().toLowerCase()).filter(Boolean);
 
-// ===== APP / CLIENTS =====
+// ===== APP / CLIENT =====
 const app = new Hono();
-app.use("/api/*", cors({ origin: "*", allowMethods: ["GET","POST","OPTIONS"], allowHeaders: ["Content-Type","Authorization"] }));
-const openai = new OpenAI({ apiKey: OPENAI_KEY });
-const gemini = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
+app.use("/api/*", cors({
+  origin: "*",
+  allowMethods: ["GET","POST","OPTIONS"],
+  allowHeaders: ["Content-Type","Authorization"],
+}));
 
-// ===== Helpers =====
-type ChatMsg = { role: "system" | "user"; content: string };
+if (!GEMINI_KEY) {
+  console.warn("[WARN] Missing GEMINI_API_KEY — server will return 500 on /api/search");
+}
+const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 
+// ===== Utils =====
 function extractJsonBlock(s: string): string {
   const start = s.indexOf("{"); const end = s.lastIndexOf("}");
   return (start>=0 && end>start) ? s.slice(start,end+1) : s.trim();
@@ -39,27 +41,13 @@ function extractJsonBlock(s: string): string {
 function safeParse<T=unknown>(t: string): {ok:true; data:T}|{ok:false; error:string} {
   try { return { ok:true, data: JSON.parse(t) as T }; } catch(e){ return { ok:false, error: (e as Error).message || "JSON parse error" }; }
 }
-function anyMissingBrand(data:any): boolean {
-  try { for (const r of data?.results ?? []) for (const b of r?.basket ?? []) if (typeof b.brand!=="string" || !b.brand.trim()) return true; } catch {}
-  return false;
-}
 function domainAllowed(domain:string): boolean {
-  const d=(domain||"").toLowerCase(); return ALLOW_DOMAINS.some(x => d===x || d.endsWith("."+x));
+  const d=(domain||"").toLowerCase();
+  return ALLOW_DOMAINS.some(x => d===x || d.endsWith("."+x));
 }
 function sanePrice(n:number|null|undefined){ return typeof n==="number" && isFinite(n) && n>=0.5 && n<=200; }
-function pickProvider(def:"openai"|"gemini", req?:string): "openai"|"gemini" {
-  const r=(req||"").toLowerCase(); const norm = r==="gemini" ? "gemini" : r==="openai" ? "openai" : "";
-  return (ALLOW_PROVIDER_OVERRIDE && norm ? norm : def) as "openai"|"gemini";
-}
 
-// ===== OpenAI =====
-async function callOpenAI(messages: ChatMsg[]): Promise<string> {
-  if (!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
-  const resp = await openai.responses.create({ model: OPENAI_MODEL, input: messages });
-  return resp.output_text ?? "";
-}
-
-// ===== Gemini (Structured Output) =====
+// ===== Schema (Structured Output) =====
 const SearchResultsSchema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -106,18 +94,18 @@ const SearchResultsSchema = {
   required: ["status","results"]
 } as const;
 
-// >>> התיקון: קריאה ל-Gemini ללא role/parts, טקסט אחד, דגם יציב
+// ===== Gemini call (Structured JSON only) =====
 async function callGeminiStructured(systemPrompt: string, userPrompt: string): Promise<string> {
-  if (!GEMINI_KEY || !gemini) throw new Error("Missing GEMINI_API_KEY");
-  const model = gemini.getGenerativeModel({
-    model: "gemini-1.5-pro-002",
+  if (!GEMINI_KEY) throw new Error("Missing GEMINI_API_KEY");
+  const model = genAI.getGenerativeModel({
+    model: GEMINI_MODEL,
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: SearchResultsSchema as any,
     },
   });
   const content = `${systemPrompt}\n\n${userPrompt}`.trim();
-  const res = await model.generateContent(content);
+  const res = await model.generateContent(content); // אין role/parts — מחרוזת אחת
   return res.response?.text?.() ?? "";
 }
 
@@ -125,10 +113,7 @@ async function callGeminiStructured(systemPrompt: string, userPrompt: string): P
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
-    openai_model: OPENAI_MODEL,
-    default_provider: DEFAULT_PROVIDER,
-    allow_override: ALLOW_PROVIDER_OVERRIDE,
-    has_openai_key: !!OPENAI_KEY,
+    gemini_model: GEMINI_MODEL,
     has_gemini_key: !!GEMINI_KEY,
     allow_domains: ALLOW_DOMAINS
   })
@@ -140,12 +125,10 @@ app.post("/api/search", async (c) => {
     const address   = String(body?.address ?? "").trim();
     const radius_km = Number(body?.radius_km ?? 0);
     const list_text = String(body?.list_text ?? "").trim();
-    const requested = String(body?.provider ?? "").toLowerCase();
 
     const needed:string[]=[]; if(!address)needed.push("address"); if(!radius_km||isNaN(radius_km))needed.push("radius_km"); if(!list_text)needed.push("list_text");
     if(needed.length) return c.json({ status:"need_input", needed }, 400);
-
-    const provider = pickProvider(DEFAULT_PROVIDER, requested);
+    if(!GEMINI_KEY)   return c.json({ status:"error", message:"GEMINI_API_KEY is missing" }, 500);
 
     const system = `
 You are a price-comparison assistant for Israel. Return ONLY strict JSON matching the schema below. No markdown, no prose.
@@ -194,7 +177,6 @@ JSON schema EXACTLY:
 `.trim();
 
     const user = `
-Provider: ${provider}
 Address: ${address}
 Radius_km: ${radius_km}
 User list (free text; commas optional): ${list_text}
@@ -205,29 +187,20 @@ Additional instructions:
 - Return 3–4 relevant stores, sorted by total_price.
 `.trim();
 
-    // ---- LLM call ----
-    let rawText = "";
-    if (provider === "gemini") {
-      if (!GEMINI_KEY) return c.json({ status:"error", message:"GEMINI_API_KEY missing while provider=gemini" }, 400);
-      rawText = await callGeminiStructured(system, user); // JSON structured
-    } else {
-      const messages: ChatMsg[] = [{ role:"system", content: system }, { role:"user", content: user }];
-      const raw = await callOpenAI(messages);
-      rawText = extractJsonBlock(raw);
-    }
+    // ---- Gemini only ----
+    const rawText = await callGeminiStructured(system, user);
 
-    // ---- Parse ----
-    const parsed1 = safeParse<any>(rawText);
-    if (!parsed1.ok) {
-      return c.json({ status:"error", message:"LLM returned non-JSON text", details: parsed1.error, raw_preview: String(rawText).slice(0,1200) }, 502);
+    const parsed = safeParse<any>(extractJsonBlock(rawText));
+    if (!parsed.ok) {
+      return c.json({ status:"error", message:"LLM returned non-JSON text", details: parsed.error, raw_preview: String(rawText).slice(0,1200) }, 502);
     }
-    let data = parsed1.data;
+    let data = parsed.data;
 
-    // ---- Validate + cleanup ----
     if (data?.status !== "ok" || !Array.isArray(data?.results)) {
-      return c.json({ status:"no_results", provider, message:"Unexpected shape from LLM", raw: data }, 200);
+      return c.json({ status:"no_results", provider:"gemini", message:"Unexpected shape from LLM", raw: data }, 200);
     }
 
+    // Validate & cleanup on server side
     for (const r of data.results) {
       for (const b of (r.basket || [])) {
         const domain = (b.source_domain || "").toLowerCase();
@@ -248,25 +221,11 @@ Additional instructions:
     data.results.sort((a:any,b:any)=> (a.total_price||0)-(b.total_price||0));
     data.results.forEach((r:any,i:number)=> r.rank=i+1);
 
-    // Fix-pass למותגים חסרים – נשאר רק במסלול OpenAI כדי לא לפגוע ב-Gemini
-    if (provider === "openai" && anyMissingBrand(data)) {
-      const fixSystem = `
-You must FIX the following JSON so that EVERY basket item has a non-empty "brand" string.
-- Keep the same structure and pricing.
-- For generic items, fill a common Israeli brand and add a short note if needed.
-Return ONLY JSON.
-`.trim();
-      const fixMsgs: ChatMsg[] = [{ role:"system", content: fixSystem }, { role:"user", content: JSON.stringify(data) }];
-      const raw2 = await callOpenAI(fixMsgs);
-      const t2 = extractJsonBlock(raw2);
-      const parsed2 = safeParse<any>(t2);
-      if (parsed2.ok) data = parsed2.data;
-    }
-
-    return c.json({ status:"ok", provider, results: data.results }, 200);
+    return c.json({ status:"ok", provider:"gemini", results: data.results }, 200);
 
   } catch (err) {
     console.error(err);
+    // מציגים הודעת שגיאה ברורה ללקוח (ללא fallback)
     return c.json({ status:"error", message:String(err) }, 500);
   }
 });
@@ -284,6 +243,7 @@ app.get("/", async (c) => {
     return c.newResponse(FALLBACK_HTML, 200, { "content-type": "text/html; charset=utf-8" });
   }
 });
+
 app.notFound(async (c) => {
   try {
     const html = await Deno.readTextFile("./public/index.html");
@@ -295,7 +255,7 @@ app.notFound(async (c) => {
 
 export default app;
 
-// ===== Fallback inline HTML =====
+// ===== Fallback inline HTML (דיבאג מהיר) =====
 const FALLBACK_HTML = `<!doctype html>
 <html lang="he" dir="rtl">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -312,14 +272,8 @@ const FALLBACK_HTML = `<!doctype html>
   .muted{color:#6b7280;font-size:12px}
 </style>
 <div class="wrap">
-  <h2>CartCompare AI — Fallback</h2>
+  <h2>CartCompare AI — Fallback (Gemini only)</h2>
   <div class="box">
-    <div class="input"><label>ספק</label>
-      <select id="provider">
-        <option value="openai">OpenAI (GPT-5)</option>
-        <option value="gemini">Gemini (Structured)</option>
-      </select>
-    </div>
     <div class="input"><label>כתובת</label><input id="addr" placeholder="תל אביב, בן יהודה 10"></div>
     <div class="input"><label>רדיוס (ק״מ)</label><input id="rad" type="number" value="5"></div>
     <div class="input"><label>רשימת קניות</label><textarea id="lst" rows="4" placeholder="שישיית מים, חלב 3%, ספגטי"></textarea></div>
@@ -330,15 +284,14 @@ const FALLBACK_HTML = `<!doctype html>
 <script>
 async function go(){
   const out=document.getElementById('out');
-  const provider=document.getElementById('provider').value;
   out.innerHTML='טוען...';
   try{
     const res=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({address:addr.value.trim(),radius_km:Number(rad.value||5),list_text:lst.value.trim(),provider})});
+      body:JSON.stringify({address:addr.value.trim(),radius_km:Number(rad.value||5),list_text:lst.value.trim()})});
     const data=await res.json();
     if(!res.ok){ out.innerHTML='שגיאת שרת: '+(data.message||res.status); return; }
     if(data.status!=='ok'){ out.innerHTML='אין תוצאות: '+(data.message||''); return; }
-    out.innerHTML='<div class="muted">Provider: '+(data.provider||provider)+'</div>' +
+    out.innerHTML=
       data.results.map(r=>{
         const total=Number(r.total_price||0).toFixed(2);
         const rows=(r.basket||[]).map(b=>{
@@ -354,7 +307,7 @@ async function go(){
       }).join('');
   }catch(e){ out.innerHTML='שגיאת רשת: '+e.message; }
 }
-function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
+function escapeHtml(s){return String(s??'').replace(/[&<>"'\/]/g,c=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;"}[c]||c))}
 function escapeAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 </script>
 </html>`;
