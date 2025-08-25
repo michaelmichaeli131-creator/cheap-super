@@ -1,6 +1,15 @@
 // server_deno.ts
-// Hono via npm + OpenAI + Google CSE
-// מגיש SPA מתוך ./public (index.html), עם fallback והודעות דיבוג ברורות
+// Hono via npm + OpenAI (Chat/Responses auto) + Google CSE
+// Modes:
+//   - openai           → ChatGPT-only (prompt free, no guards)
+//   - openai_web_only  → ChatGPT with Google CSE snippets (still prompt free)
+//
+// Env (Deno Deploy → Settings → Environment Variables):
+// OPENAI_API_KEY=sk-...
+// OPENAI_MODEL=gpt-4o-mini      // או gpt-4o, gpt-5, gpt-4.1 וכו'
+// GOOGLE_CSE_KEY=AIza...
+// GOOGLE_CSE_CX=758dd387a6efa4bfe
+// DEBUG=true                    // אופציונלי
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -9,12 +18,13 @@ import { serveStatic } from "npm:hono/serve-static";
 const app = new Hono();
 
 // ===== ENV =====
-const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
-const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini";
-const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
-const GOOGLE_CSE_CX  = Deno.env.get("GOOGLE_CSE_CX")  ?? "";
-const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
+const OPENAI_KEY      = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_MODEL    = Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini";
+const GOOGLE_CSE_KEY  = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
+const GOOGLE_CSE_CX   = Deno.env.get("GOOGLE_CSE_CX")  ?? "";
+const DEBUG           = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
+// ===== Logging =====
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
@@ -57,20 +67,25 @@ Important:
 { "status":"ok", "results":[ ... ] }
 `.trim();
 
-// ===== Middleware =====
+// ===== Middlewares =====
 app.use("/api/*", cors({
   origin: "*",
   allowMethods: ["GET","POST","OPTIONS"],
   allowHeaders: ["Content-Type","Authorization"],
 }));
 
-// הגשת קבצים סטטיים מתוך ./public  (תמונות, CSS, JS וכו')
+// הגשת קבצים סטטיים מתוך ./public
 app.use("/public/*", serveStatic({ root: "./" }));
 app.use("/assets/*", serveStatic({ root: "./" }));
 app.use("/img/*",    serveStatic({ root: "./" }));
 
 // ===== Helpers =====
-async function callOpenAI(id:string, prompt:string, input:string){
+function isResponsesModel(model:string){
+  // משפחות מודלים שמומלץ/נדרש לעבוד איתן דרך Responses API
+  return /^gpt-5|^gpt-4\.1/.test(model);
+}
+
+async function callOpenAI_Chat(id:string, prompt:string, input:string){
   if(!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
   const body = {
     model: OPENAI_MODEL,
@@ -78,8 +93,10 @@ async function callOpenAI(id:string, prompt:string, input:string){
       { role:"system", content: prompt },
       { role:"user",   content: input  },
     ],
-    temperature: 0.7,
+    // ⛔ אין temperature / top_p וכו' – חלק מהמודלים לא תומכים
   };
+  if (DEBUG) info(id, "OpenAI (chat) req", { model: OPENAI_MODEL });
+
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method:"POST",
     headers:{
@@ -90,18 +107,62 @@ async function callOpenAI(id:string, prompt:string, input:string){
   });
   const j = await r.json().catch(()=> ({}));
   if (!r.ok) {
-    err(id, "OpenAI bad status", j);
+    err(id, "OpenAI chat bad status", j);
     throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j)}`);
   }
   const text = j.choices?.[0]?.message?.content;
-  if (!text) throw new Error("OpenAI empty content");
+  if (!text) throw new Error("OpenAI chat: empty content");
 
   try {
     return JSON.parse(text);
   } catch {
-    err(id, "OpenAI returned non-JSON (passthrough)", text);
+    err(id, "OpenAI chat returned non-JSON (passthrough)", text);
     return { status:"ok", results:[], raw:text };
   }
+}
+
+async function callOpenAI_Responses(id:string, prompt:string, input:string){
+  if(!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
+  const body = {
+    model: OPENAI_MODEL,
+    // Responses API: נשתמש ב-"input" כרשימת הודעות
+    input: [
+      { role: "system", content: prompt },
+      { role: "user",   content: input  }
+    ],
+    // ⛔ אין temperature / response_format / text.format – דיפולט טקסט
+  };
+  if (DEBUG) info(id, "OpenAI (responses) req", { model: OPENAI_MODEL });
+
+  const r = await fetch("https://api.openai.com/v1/responses", {
+    method:"POST",
+    headers:{
+      "Authorization": `Bearer ${OPENAI_KEY}`,
+      "Content-Type":"application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const j = await r.json().catch(()=> ({}));
+  if (!r.ok) {
+    err(id, "OpenAI responses bad status", j);
+    throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j)}`);
+  }
+  // Responses API מחזיר output_text או מבנה output אחר
+  const text = j.output_text ?? j.choices?.[0]?.message?.content ?? "";
+  if (!text) {
+    // ליתר ביטחון ננסה לאסוף מכל part
+    const fromParts = Array.isArray(j.output) ? j.output.map((p:any)=>p?.content?.[0]?.text ?? "").join("\n") : "";
+    if (!fromParts) throw new Error("OpenAI responses: empty content");
+    try { return JSON.parse(fromParts); } catch { return { status:"ok", results:[], raw: fromParts }; }
+  }
+  try { return JSON.parse(text); } catch { return { status:"ok", results:[], raw: text }; }
+}
+
+async function callOpenAI(id:string, prompt:string, input:string){
+  if (isResponsesModel(OPENAI_MODEL)) {
+    return callOpenAI_Responses(id, prompt, input);
+  }
+  return callOpenAI_Chat(id, prompt, input);
 }
 
 async function googleCseSearch(id:string, query:string){
@@ -114,17 +175,28 @@ async function googleCseSearch(id:string, query:string){
   url.searchParams.set("hl", "he");
   url.searchParams.set("lr", "lang_iw");
 
+  if (DEBUG) info(id, "CSE url", url.toString());
   const res = await fetch(url.toString());
   const data = await res.json().catch(()=> ({}));
   if (!res.ok) {
     err(id, "CSE bad status", data);
     throw new Error(`CSE ${res.status}: ${JSON.stringify(data)}`);
   }
+  if (DEBUG) info(id, "CSE items", (data.items||[]).length);
   return (data.items||[]).map((it:any)=>({
     title: String(it.title||""),
     link:  String(it.link||""),
     snippet:String(it.snippet||"")
   }));
+}
+
+async function tryReadIndex(): Promise<string|null> {
+  try {
+    const html = await Deno.readTextFile("./public/index.html");
+    return html;
+  } catch {
+    return null;
+  }
 }
 
 // ===== API =====
@@ -166,6 +238,7 @@ app.post("/api/search", async (c)=>{
     if (mode === "openai_web_only") {
       const q = `מחירים ${list_text} ליד ${address} בקוטר ${radius_km} ק"מ`;
       const hits = await googleCseSearch(id, q);
+
       const llmInput = `
 Address: ${address}
 Radius: ${radius_km} km
@@ -174,6 +247,7 @@ List: ${list_text}
 Search snippets:
 ${hits.map(h=>`- ${h.title}: ${h.snippet} (${h.link})`).join("\n")}
 `.trim();
+
       const out = await callOpenAI(id, PROMPT_FREE, llmInput);
       info(id, "openai_web_only done");
       return c.json(out, 200);
@@ -192,15 +266,6 @@ ${hits.map(h=>`- ${h.title}: ${h.snippet} (${h.link})`).join("\n")}
 });
 
 // ===== Serve SPA from ./public =====
-async function tryReadIndex(): Promise<string|null> {
-  try {
-    const html = await Deno.readTextFile("./public/index.html");
-    return html;
-  } catch {
-    return null;
-  }
-}
-
 app.get("/", async (c) => {
   const id = rid();
   const html = await tryReadIndex();
