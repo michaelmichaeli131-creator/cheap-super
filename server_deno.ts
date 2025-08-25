@@ -1,33 +1,25 @@
 // server_deno.ts
-// Hono via npm (avoids deno.land version 404), OpenAI, Google CSE
-// Modes:
-//   - openai           → ChatGPT רגיל (פרומפט חופשי, ללא הגנות)
-//   - openai_web_only  → ChatGPT עם חיפוש ברשת בלבד (Google CSE), עדיין פרומפט חופשי
-//
-// Env (Deno Deploy → Settings → Environment Variables):
-// OPENAI_API_KEY=sk-...
-// OPENAI_MODEL=gpt-4o-mini   // או כל מודל שיש לך (gpt-4o/gpt-5 אם פתוח)
-// GOOGLE_CSE_KEY=AIza...
-// GOOGLE_CSE_CX=758dd387a6efa4bfe
-// DEBUG=true                 // אופציונלי
+// Hono via npm + OpenAI + Google CSE
+// מגיש SPA מתוך ./public (index.html), עם fallback והודעות דיבוג ברורות
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
+import { serveStatic } from "npm:hono/serve-static";
 
 const app = new Hono();
 
 // ===== ENV =====
-const OPENAI_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini";
 const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
 const GOOGLE_CSE_CX  = Deno.env.get("GOOGLE_CSE_CX")  ?? "";
-const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase()==="true";
+const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
 
-// ===== PROMPT (ChatGPT-only, חופשי) =====
+// ===== PROMPT (ChatGPT-only, חופשי – בלי הגנות) =====
 const PROMPT_FREE = `
 You are a shopping assistant AI.
 
@@ -65,16 +57,19 @@ Important:
 { "status":"ok", "results":[ ... ] }
 `.trim();
 
-// ===== Middlewares =====
+// ===== Middleware =====
 app.use("/api/*", cors({
   origin: "*",
   allowMethods: ["GET","POST","OPTIONS"],
   allowHeaders: ["Content-Type","Authorization"],
 }));
 
-// ===== Helpers =====
-type ChatMsg = { role:"system"|"user"; content:string };
+// הגשת קבצים סטטיים מתוך ./public  (תמונות, CSS, JS וכו')
+app.use("/public/*", serveStatic({ root: "./" }));
+app.use("/assets/*", serveStatic({ root: "./" }));
+app.use("/img/*",    serveStatic({ root: "./" }));
 
+// ===== Helpers =====
 async function callOpenAI(id:string, prompt:string, input:string){
   if(!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
   const body = {
@@ -85,8 +80,6 @@ async function callOpenAI(id:string, prompt:string, input:string){
     ],
     temperature: 0.7,
   };
-  if (DEBUG) info(id, "OpenAI req", { model: OPENAI_MODEL });
-
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method:"POST",
     headers:{
@@ -100,15 +93,13 @@ async function callOpenAI(id:string, prompt:string, input:string){
     err(id, "OpenAI bad status", j);
     throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j)}`);
   }
-  if (DEBUG) info(id, "OpenAI resp", { hasChoices: !!j.choices?.length });
   const text = j.choices?.[0]?.message?.content;
   if (!text) throw new Error("OpenAI empty content");
 
   try {
     return JSON.parse(text);
-  } catch (e) {
-    // מחזיר עטיפה אם זה לא JSON
-    err(id, "OpenAI returned non-JSON, wrapping", text);
+  } catch {
+    err(id, "OpenAI returned non-JSON (passthrough)", text);
     return { status:"ok", results:[], raw:text };
   }
 }
@@ -123,15 +114,12 @@ async function googleCseSearch(id:string, query:string){
   url.searchParams.set("hl", "he");
   url.searchParams.set("lr", "lang_iw");
 
-  if (DEBUG) info(id, "CSE url", url.toString());
-
   const res = await fetch(url.toString());
   const data = await res.json().catch(()=> ({}));
   if (!res.ok) {
     err(id, "CSE bad status", data);
     throw new Error(`CSE ${res.status}: ${JSON.stringify(data)}`);
   }
-  if (DEBUG) info(id, "CSE items", (data.items||[]).length);
   return (data.items||[]).map((it:any)=>({
     title: String(it.title||""),
     link:  String(it.link||""),
@@ -139,12 +127,7 @@ async function googleCseSearch(id:string, query:string){
   }));
 }
 
-function extractJsonBlock(s:string){
-  const a=s.indexOf("{"), b=s.lastIndexOf("}");
-  return (a>=0 && b>a) ? s.slice(a,b+1) : s.trim();
-}
-
-// ===== Routes =====
+// ===== API =====
 app.get("/api/health", (c)=>{
   const id = rid();
   const payload = {
@@ -181,11 +164,8 @@ app.post("/api/search", async (c)=>{
     }
 
     if (mode === "openai_web_only") {
-      // 1) Google CSE
       const q = `מחירים ${list_text} ליד ${address} בקוטר ${radius_km} ק"מ`;
       const hits = await googleCseSearch(id, q);
-
-      // 2) הזרקת הסניפטים ל-LLM (עדיין חופשי — לא “מענישים” על חוסר/0)
       const llmInput = `
 Address: ${address}
 Radius: ${radius_km} km
@@ -194,13 +174,12 @@ List: ${list_text}
 Search snippets:
 ${hits.map(h=>`- ${h.title}: ${h.snippet} (${h.link})`).join("\n")}
 `.trim();
-
       const out = await callOpenAI(id, PROMPT_FREE, llmInput);
       info(id, "openai_web_only done");
       return c.json(out, 200);
     }
 
-    // Default: openai only (פרומפט חופשי, ללא הגנות)
+    // ChatGPT-only (פרומפט חופשי, ללא הגנות)
     const llmIn = `Address: ${address}\nRadius: ${radius_km} km\nList: ${list_text}\n`;
     const out = await callOpenAI(id, PROMPT_FREE, llmIn);
     info(id, "openai only done");
@@ -212,7 +191,48 @@ ${hits.map(h=>`- ${h.title}: ${h.snippet} (${h.link})`).join("\n")}
   }
 });
 
-// Root
-app.get("/", (c)=> c.text("CartCompare AI server is running ✅"));
+// ===== Serve SPA from ./public =====
+async function tryReadIndex(): Promise<string|null> {
+  try {
+    const html = await Deno.readTextFile("./public/index.html");
+    return html;
+  } catch {
+    return null;
+  }
+}
+
+app.get("/", async (c) => {
+  const id = rid();
+  const html = await tryReadIndex();
+  if (html) {
+    info(id, "Serving ./public/index.html");
+    return c.newResponse(html, 200, { "content-type": "text/html; charset=utf-8" });
+  }
+  info(id, "No ./public/index.html found. Serving a small helper page.");
+  return c.newResponse(FALLBACK_HTML, 200, { "content-type": "text/html; charset=utf-8" });
+});
+
+// SPA fallback (deep routes)
+app.notFound(async (c) => {
+  const html = await tryReadIndex();
+  return c.newResponse(
+    html ?? FALLBACK_HTML,
+    200,
+    { "content-type": "text/html; charset=utf-8" }
+  );
+});
 
 Deno.serve(app.fetch);
+
+// ===== Minimal helper page if no public/index.html =====
+const FALLBACK_HTML = `<!doctype html>
+<html lang="he" dir="rtl">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CartCompare AI – Setup</title>
+<style>body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#f5f9ff;color:#0d1321;margin:0;padding:24px} .box{max-width:680px;margin:0 auto;background:#fff;border-radius:12px;padding:16px;box-shadow:0 10px 30px rgba(15,50,90,.08)} code{background:#eef2f7;padding:2px 6px;border-radius:6px}</style>
+<div class="box">
+  <h2>CartCompare AI</h2>
+  <p>כדי להציג את ה־UI, שים את הקובץ <code>public/index.html</code> בריפו. כרגע השרת רץ, אבל אין קובץ UI להגיש.</p>
+  <p>בדוק גם את <code>/api/health</code> לוודא שמפתחות הסביבה מוגדרים.</p>
+</div>
+</html>`;
