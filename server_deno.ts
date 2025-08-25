@@ -1,15 +1,13 @@
 // server_deno.ts
-// Hono via npm + OpenAI (Chat/Responses auto) + Google CSE
-// Modes:
-//   - openai           → ChatGPT-only (prompt free, no guards)
-//   - openai_web_only  → ChatGPT with Google CSE snippets (still prompt free)
+// Hono via npm + Anthropic Claude + Google CSE
+// Flow: client -> /api/search -> Google CSE (snippets) -> Claude messages -> strict JSON
 //
-// Env (Deno Deploy → Settings → Environment Variables):
-// OPENAI_API_KEY=sk-...
-// OPENAI_MODEL=gpt-4o-mini      // או gpt-4o, gpt-5, gpt-4.1 וכו'
+// ENV (Deno Deploy → Settings → Environment Variables):
+// ANTHROPIC_API_KEY=sk-ant-...
+// ANTHROPIC_MODEL=claude-3-5-sonnet-20240620
 // GOOGLE_CSE_KEY=AIza...
-// GOOGLE_CSE_CX=758dd387a6efa4bfe
-// DEBUG=true                    // אופציונלי
+// GOOGLE_CSE_CX=xxxxxxxxxxxxxxxxx
+// DEBUG=true (optional)
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -18,286 +16,253 @@ import { serveStatic } from "npm:hono/serve-static";
 const app = new Hono();
 
 // ===== ENV =====
-const OPENAI_KEY      = Deno.env.get("OPENAI_API_KEY") ?? "";
-const OPENAI_MODEL    = Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini";
-const GOOGLE_CSE_KEY  = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
-const GOOGLE_CSE_CX   = Deno.env.get("GOOGLE_CSE_CX")  ?? "";
-const DEBUG           = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
+const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+const ANTHROPIC_MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-3-5-sonnet-20240620";
+const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
+const GOOGLE_CSE_CX = Deno.env.get("GOOGLE_CSE_CX") ?? "";
+const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase()==="true";
 
-// ===== Logging =====
+// ===== Utils / Logging =====
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
 
-// ===== PROMPT (ChatGPT-only, חופשי – בלי הגנות) =====
-const PROMPT_FREE = `
-You are a shopping assistant AI.
+function extractJson(text:string){
+if (!text) return null;
+// fenced ```json ... ```
+const fence = text.match(/```json\s*([\s\S]*?)```/i);
+if (fence?.[1]) {
+const s = fence[1].trim();
+try { return JSON.parse(s); } catch {}
+}
+// first {...} block
+const a = text.indexOf("{"), b = text.lastIndexOf("}");
+if (a>=0 && b>a) {
+const s = text.slice(a, b+1);
+try { return JSON.parse(s); } catch {}
+}
+return null;
+}
 
-The user will provide:
-- Address (city/street)
-- Search radius in kilometers
-- Shopping list in free text
+// ===== Prompt (קשוח, JSON בלבד, מקור/קישור לכל מחיר) =====
+const PROMPT_CLAUDE = `
+You are a price-comparison agent.
 
-Your task:
-1) Parse the shopping list into structured items:
-   - name (string)
-   - quantity (number or string, keep as written if unclear)
-   - brand (string, if known; otherwise leave empty or guess a common brand)
-   - unit_price (string or number, can be an estimate, a range, or "unknown")
-   - line_total (string or number, can be approximate, e.g. "~25₪")
-   - substitution (boolean, true if you guessed a replacement)
-   - notes (string, optional comments)
+INPUTS YOU GET:
+- address (city/street/country)
+- radius_km (numeric)
+- list_text (free-form shopping list)
+- web_snippets: a list of search results (title, snippet, url) gathered just now.
 
-2) Aggregate items into a basket.
+TASK:
+1) Parse the shopping list into concrete items (name, quantity, brand if known, size when obvious).
+2) Use ONLY the web_snippets *as live sources* to find realistic prices from real stores (supermarkets, e-commerce, price-comparison sites).
+3) Return 3–4 stores near the given address within the radius. If exact distance is unknown from snippets, estimate.
+4) Sort stores cheapest→expensive by total_price.
 
-3) Suggest 3–4 nearby stores (you may invent realistic ones if no real data).
-   Each store:
-   - store_name
-   - address
-   - distance_km
-   - basket (items as above)
-   - total_price (string or number, can be approximate)
-   - currency: "₪"
+STRICT JSON OUTPUT ONLY (no extra text):
+{
+"status": "ok",
+"results": [
+{
+"rank": 1,
+"store_name": "string",
+"address": "string",
+"distance_km": 2.1,
+"currency": "₪",
+"total_price": 123.45,
+"notes": "optional string",
+"basket": [
+{
+"name": "string",
+"brand": "string (or empty)",
+"quantity": 1,
+"unit_price": 12.34,
+"line_total": 12.34,
+"product_url": "https://...",
+"source_domain": "example.co.il",
+"match_confidence": 0.0–1.0,
+"substitution": false,
+"notes": "optional"
+}
+],
+"match_overall": 0.0–1.0
+}
+]
+}
 
-Important:
-- Never leave fields out.
-- It's allowed to invent/estimate.
-- Do NOT use 0 unless the user wrote 0.
-- Output STRICT JSON only:
-{ "status":"ok", "results":[ ... ] }
+HARD RULES:
+- Use the snippets for evidence. Prefer product/store pages over articles/blogs.
+- Always include product_url & source_domain for each basket item if available.
+- If price not explicitly found, estimate reasonably BUT mark lower confidence (e.g. 0.4) and add "notes".
+- No zeros unless the page says 0.
+- Currency "₪" for Israel; otherwise use local currency symbol.
+- ABSOLUTELY NO TEXT OUTSIDE JSON.
 `.trim();
 
-// ===== Middlewares =====
-app.use("/api/*", cors({
-  origin: "*",
-  allowMethods: ["GET","POST","OPTIONS"],
-  allowHeaders: ["Content-Type","Authorization"],
+// ===== Google CSE =====
+async function googleCse(id:string, q:string, num=8){
+if(!GOOGLE_CSE_KEY || !GOOGLE_CSE_CX) throw new Error("Missing GOOGLE_CSE_KEY/GOOGLE_CSE_CX");
+const url = new URL("https://www.googleapis.com/customsearch/v1");
+url.searchParams.set("key", GOOGLE_CSE_KEY);
+url.searchParams.set("cx", GOOGLE_CSE_CX);
+url.searchParams.set("q", q);
+url.searchParams.set("num", String(num));
+url.searchParams.set("hl", "he");
+
+const res = await fetch(url.toString());
+const data = await res.json().catch(()=> ({}));
+if (!res.ok) {
+err(id, "CSE bad status", data);
+throw new Error(`CSE ${res.status}: ${JSON.stringify(data)}`);
+}
+const items = (data.items||[]).map((it:any)=>({
+title: String(it.title||""),
+snippet: String(it.snippet||""),
+url: String(it.link||"")
 }));
-
-// הגשת קבצים סטטיים מתוך ./public
-app.use("/public/*", serveStatic({ root: "./" }));
-app.use("/assets/*", serveStatic({ root: "./" }));
-app.use("/img/*",    serveStatic({ root: "./" }));
-
-// ===== Helpers =====
-function isResponsesModel(model:string){
-  // משפחות מודלים שמומלץ/נדרש לעבוד איתן דרך Responses API
-  return /^gpt-5|^gpt-4\.1/.test(model);
+if (DEBUG) info(id, "CSE items", items.length);
+return items;
 }
 
-async function callOpenAI_Chat(id:string, prompt:string, input:string){
-  if(!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
-  const body = {
-    model: OPENAI_MODEL,
-    messages: [
-      { role:"system", content: prompt },
-      { role:"user",   content: input  },
-    ],
-    // ⛔ אין temperature / top_p וכו' – חלק מהמודלים לא תומכים
-  };
-  if (DEBUG) info(id, "OpenAI (chat) req", { model: OPENAI_MODEL });
-
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method:"POST",
-    headers:{
-      "Authorization": `Bearer ${OPENAI_KEY}`,
-      "Content-Type":"application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  const j = await r.json().catch(()=> ({}));
-  if (!r.ok) {
-    err(id, "OpenAI chat bad status", j);
-    throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j)}`);
-  }
-  const text = j.choices?.[0]?.message?.content;
-  if (!text) throw new Error("OpenAI chat: empty content");
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    err(id, "OpenAI chat returned non-JSON (passthrough)", text);
-    return { status:"ok", results:[], raw:text };
-  }
+function dedupByUrl(items:{title:string;snippet:string;url:string}[]){
+const seen = new Set<string>();
+const out:any[] = [];
+for (const it of items){
+const u = it.url.trim();
+if (!u || seen.has(u)) continue;
+seen.add(u);
+out.push(it);
+}
+return out;
 }
 
-async function callOpenAI_Responses(id:string, prompt:string, input:string){
-  if(!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
-  const body = {
-    model: OPENAI_MODEL,
-    // Responses API: נשתמש ב-"input" כרשימת הודעות
-    input: [
-      { role: "system", content: prompt },
-      { role: "user",   content: input  }
-    ],
-    // ⛔ אין temperature / response_format / text.format – דיפולט טקסט
-  };
-  if (DEBUG) info(id, "OpenAI (responses) req", { model: OPENAI_MODEL });
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method:"POST",
-    headers:{
-      "Authorization": `Bearer ${OPENAI_KEY}`,
-      "Content-Type":"application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  const j = await r.json().catch(()=> ({}));
-  if (!r.ok) {
-    err(id, "OpenAI responses bad status", j);
-    throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j)}`);
-  }
-  // Responses API מחזיר output_text או מבנה output אחר
-  const text = j.output_text ?? j.choices?.[0]?.message?.content ?? "";
-  if (!text) {
-    // ליתר ביטחון ננסה לאסוף מכל part
-    const fromParts = Array.isArray(j.output) ? j.output.map((p:any)=>p?.content?.[0]?.text ?? "").join("\n") : "";
-    if (!fromParts) throw new Error("OpenAI responses: empty content");
-    try { return JSON.parse(fromParts); } catch { return { status:"ok", results:[], raw: fromParts }; }
-  }
-  try { return JSON.parse(text); } catch { return { status:"ok", results:[], raw: text }; }
+// ===== Claude =====
+async function callClaude(id:string, systemPrompt:string, userPayload:string){
+if(!ANTHROPIC_KEY) throw new Error("Missing ANTHROPIC_API_KEY");
+const resp = await fetch("https://api.anthropic.com/v1/messages", {
+method:"POST",
+headers:{
+"content-type":"application/json",
+"x-api-key": ANTHROPIC_KEY,
+"anthropic-version":"2023-06-01"
+},
+body: JSON.stringify({
+model: ANTHROPIC_MODEL,
+max_tokens: 2000,
+system: systemPrompt,
+messages: [
+{ role:"user", content: userPayload }
+]
+// no temperature/top_p → defaults
+})
+});
+const j = await resp.json().catch(()=> ({}));
+if (!resp.ok){
+err(id, "Claude bad status", j);
+throw new Error(`Claude ${resp.status}: ${JSON.stringify(j)}`);
 }
-
-async function callOpenAI(id:string, prompt:string, input:string){
-  if (isResponsesModel(OPENAI_MODEL)) {
-    return callOpenAI_Responses(id, prompt, input);
-  }
-  return callOpenAI_Chat(id, prompt, input);
-}
-
-async function googleCseSearch(id:string, query:string){
-  if(!GOOGLE_CSE_KEY || !GOOGLE_CSE_CX) throw new Error("Missing GOOGLE_CSE_KEY/GOOGLE_CSE_CX");
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", GOOGLE_CSE_KEY);
-  url.searchParams.set("cx",  GOOGLE_CSE_CX);
-  url.searchParams.set("q",   query);
-  url.searchParams.set("num", "6");
-  url.searchParams.set("hl", "he");
-  url.searchParams.set("lr", "lang_iw");
-
-  if (DEBUG) info(id, "CSE url", url.toString());
-  const res = await fetch(url.toString());
-  const data = await res.json().catch(()=> ({}));
-  if (!res.ok) {
-    err(id, "CSE bad status", data);
-    throw new Error(`CSE ${res.status}: ${JSON.stringify(data)}`);
-  }
-  if (DEBUG) info(id, "CSE items", (data.items||[]).length);
-  return (data.items||[]).map((it:any)=>({
-    title: String(it.title||""),
-    link:  String(it.link||""),
-    snippet:String(it.snippet||"")
-  }));
-}
-
-async function tryReadIndex(): Promise<string|null> {
-  try {
-    const html = await Deno.readTextFile("./public/index.html");
-    return html;
-  } catch {
-    return null;
-  }
+const text = Array.isArray(j.content) ? (j.content.find((p:any)=>p.type==="text")?.text ?? "") : "";
+if (!text) throw new Error("Claude empty content");
+const parsed = extractJson(text);
+if (parsed) return parsed;
+// Passthrough if not JSON
+return { status:"ok", results:[], raw:text };
 }
 
 // ===== API =====
+app.use("/api/*", cors({
+origin:"*",
+allowMethods:["GET","POST","OPTIONS"],
+allowHeaders:["Content-Type","Authorization"]
+}));
+
 app.get("/api/health", (c)=>{
-  const id = rid();
-  const payload = {
-    ok:true,
-    openai_model: OPENAI_MODEL,
-    has_openai_key: !!OPENAI_KEY,
-    has_google_cse_key: !!GOOGLE_CSE_KEY,
-    has_google_cse_cx: !!GOOGLE_CSE_CX,
-    requestId: id
-  };
-  info(id, "GET /api/health", payload);
-  return c.json(payload);
+const id = rid();
+const payload = {
+ok:true,
+model: ANTHROPIC_MODEL,
+has_anthropic_key: !!ANTHROPIC_KEY,
+has_google_cse_key: !!GOOGLE_CSE_KEY,
+has_google_cse_cx: !!GOOGLE_CSE_CX,
+requestId: id
+};
+info(id, "GET /api/health", payload);
+return c.json(payload);
 });
 
 app.post("/api/search", async (c)=>{
-  const id = rid();
-  try{
-    const body = await c.req.json().catch(()=> ({}));
-    info(id, "POST /api/search body", body);
+const id = rid();
+try{
+const body = await c.req.json().catch(()=> ({}));
+info(id, "POST /api/search body", body);
 
-    const address   = String(body?.address ?? "").trim();
-    const radius_km = Number(body?.radius_km ?? 0);
-    const list_text = String(body?.list_text ?? "").trim();
-    const mode      = String(body?.mode ?? "openai").toLowerCase(); // "openai" | "openai_web_only"
+const address = String(body?.address ?? "").trim();
+const radius_km = Number(body?.radius_km ?? 0);
+const list_text = String(body?.list_text ?? "").trim();
 
-    const missing:string[]=[];
-    if(!address) missing.push("address");
-    if(!radius_km) missing.push("radius_km");
-    if(!list_text) missing.push("list_text");
-    if(missing.length){
-      const resp = { status:"need_input", needed:missing, requestId:id };
-      info(id, "need_input", resp);
-      return c.json(resp, 400);
-    }
+const miss:string[]=[];
+if(!address) miss.push("address");
+if(!radius_km) miss.push("radius_km");
+if(!list_text) miss.push("list_text");
+if (miss.length){
+return c.json({ status:"need_input", needed: miss, requestId:id }, 400);
+}
 
-    if (mode === "openai_web_only") {
-      const q = `מחירים ${list_text} ליד ${address} בקוטר ${radius_km} ק"מ`;
-      const hits = await googleCseSearch(id, q);
+// Build 2 complementary queries (בלי להסתמך על פסיקים)
+const q1 = `site:co.il ${list_text} מחיר קנייה ${address}`;
+const q2 = `${list_text} מחירים ${address}`;
 
-      const llmInput = `
-Address: ${address}
-Radius: ${radius_km} km
-List: ${list_text}
+const [r1,r2] = await Promise.all([googleCse(id,q1,8), googleCse(id,q2,8)]);
+const snippets = dedupByUrl([...r1, ...r2]);
 
-Search snippets:
-${hits.map(h=>`- ${h.title}: ${h.snippet} (${h.link})`).join("\n")}
+const userPayload =
+`address: ${address}
+radius_km: ${radius_km}
+list_text: ${list_text}
+
+web_snippets:
+${snippets.map(s=>`- title: ${s.title}\n snippet: ${s.snippet}\n url: ${s.url}`).join("\n")}
 `.trim();
 
-      const out = await callOpenAI(id, PROMPT_FREE, llmInput);
-      info(id, "openai_web_only done");
-      return c.json(out, 200);
-    }
+const out = await callClaude(id, PROMPT_CLAUDE, userPayload);
 
-    // ChatGPT-only (פרומפט חופשי, ללא הגנות)
-    const llmIn = `Address: ${address}\nRadius: ${radius_km} km\nList: ${list_text}\n`;
-    const out = await callOpenAI(id, PROMPT_FREE, llmIn);
-    info(id, "openai only done");
-    return c.json(out, 200);
+// sanity: enforce structure
+if (!out || out.status!=="ok" || !Array.isArray(out.results)) {
+info(id, "Unexpected Claude shape", out);
+return c.json({ status:"no_results", message:"Unexpected shape from LLM", results:[], debug: out, requestId:id }, 502);
+}
 
-  }catch(e:any){
-    err(id, "handler failed", e);
-    return c.json({ status:"error", message: e?.message || String(e), requestId:id }, 500);
-  }
+return c.json(out, 200);
+
+}catch(e:any){
+err(id, "search handler failed", e);
+return c.json({ status:"error", message: e?.message || String(e), requestId:id }, 500);
+}
 });
 
-// ===== Serve SPA from ./public =====
-app.get("/", async (c) => {
-  const id = rid();
-  const html = await tryReadIndex();
-  if (html) {
-    info(id, "Serving ./public/index.html");
-    return c.newResponse(html, 200, { "content-type": "text/html; charset=utf-8" });
-  }
-  info(id, "No ./public/index.html found. Serving a small helper page.");
-  return c.newResponse(FALLBACK_HTML, 200, { "content-type": "text/html; charset=utf-8" });
+// ===== Static UI from ./public =====
+app.use("/public/*", serveStatic({ root:"./" }));
+app.use("/assets/*", serveStatic({ root:"./" }));
+
+async function tryIndex(): Promise<string|null> {
+try { return await Deno.readTextFile("./public/index.html"); }
+catch { return null; }
+}
+
+app.get("/", async (c)=>{
+const id = rid();
+const html = await tryIndex();
+if (html){
+info(id, "Serving ./public/index.html");
+return c.newResponse(html, 200, { "content-type":"text/html; charset=utf-8" });
+}
+return c.newResponse(`<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>Upload <code>public/index.html</code> to show the UI.</p>`, 200);
 });
 
-// SPA fallback (deep routes)
-app.notFound(async (c) => {
-  const html = await tryReadIndex();
-  return c.newResponse(
-    html ?? FALLBACK_HTML,
-    200,
-    { "content-type": "text/html; charset=utf-8" }
-  );
+app.notFound(async (c)=>{
+const html = await tryIndex();
+return c.newResponse(html ?? "<p>Not found</p>", 200, { "content-type":"text/html; charset=utf-8" });
 });
 
 Deno.serve(app.fetch);
-
-// ===== Minimal helper page if no public/index.html =====
-const FALLBACK_HTML = `<!doctype html>
-<html lang="he" dir="rtl">
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CartCompare AI – Setup</title>
-<style>body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#f5f9ff;color:#0d1321;margin:0;padding:24px} .box{max-width:680px;margin:0 auto;background:#fff;border-radius:12px;padding:16px;box-shadow:0 10px 30px rgba(15,50,90,.08)} code{background:#eef2f7;padding:2px 6px;border-radius:6px}</style>
-<div class="box">
-  <h2>CartCompare AI</h2>
-  <p>כדי להציג את ה־UI, שים את הקובץ <code>public/index.html</code> בריפו. כרגע השרת רץ, אבל אין קובץ UI להגיש.</p>
-  <p>בדוק גם את <code>/api/health</code> לוודא שמפתחות הסביבה מוגדרים.</p>
-</div>
-</html>`;
