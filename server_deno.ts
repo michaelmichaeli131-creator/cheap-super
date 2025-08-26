@@ -118,7 +118,7 @@ HARD RULES:
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // Strict JSON Schema (nullable optional fields are still in "required", with type ["string","null"])
+  // Relaxed strict JSON Schema: allow empty arrays, make "notes" optional
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -137,7 +137,6 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
             "distance_km",
             "currency",
             "total_price",
-            "notes",
             "basket",
             "match_overall"
           ],
@@ -163,8 +162,7 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
                   "product_url",
                   "source_domain",
                   "match_confidence",
-                  "substitution",
-                  "notes"
+                  "substitution"
                 ],
                 properties: {
                   name: { type: "string" },
@@ -191,10 +189,11 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     model: OPENAI_MODEL,
     instructions: systemPrompt,
     input: userPrompt,
-    // Built-in web search tool:
+    // Built-in web search tool
     tools: [{ type: "web_search" }],
-    tool_choice: "auto",
-    // no temperature (unsupported in some models)
+    // Force using the tool (since it's the only one, it will be web_search)
+    tool_choice: "required",
+    // no temperature (some models don’t support it)
     max_output_tokens: 1800,
     text: {
       format: {
@@ -292,6 +291,7 @@ SEARCH SCOPE:
 - Only Israeli retailer/product pages with explicit prices.
 - Prefer store pages; ignore blogs/docs/dev sites.
 
+If you cannot find any valid store/product prices, RETURN: {"status":"ok","results":[]}
 Return STRICT JSON (see system schema).`;
 
   return c.json({
@@ -329,6 +329,7 @@ INSTRUCTIONS:
 - Use web_search to collect real prices (₪) from Israeli retailers near the address.
 - Include product_url and source_domain for each line when available.
 - If a price is missing, estimate with lower confidence and add notes.
+- If you cannot find any valid store/product prices, RETURN: {"status":"ok","results":[]}
 - Return STRICT JSON only (see schema in system).`;
 
     const { parsed, raw, request_id } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
