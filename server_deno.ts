@@ -191,18 +191,17 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     }
   } as const;
 
-  const body = {
+  const body: any = {
     model: OPENAI_MODEL,
     instructions: systemPrompt,
     input: userPrompt,
     tools: [{ type: "web_search" }], // built-in web search tool
     tool_choice: "auto",
-    temperature: 0.2,
+    // temperature הוסר כדי למנוע 400 במודלים שאינם תומכים (GPT-5)
     max_output_tokens: 1800,
 
-    // Structured Outputs per Responses API
+    // Structured Outputs per Responses API:
     // text.format = { type: "json_schema", name, schema }
-    // Docs: Structured Outputs; Responses API; Web search tool. :contentReference[oaicite:1]{index=1}
     text: {
       format: {
         type: "json_schema",
@@ -231,7 +230,7 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
   catch { try { jsonOrText = await resp.text(); } catch { jsonOrText = null; } }
 
   if (!resp.ok) {
-    // החזר פירוט מלא כולל request id (ע"פ Debugging docs). :contentReference[oaicite:2]{index=2}
+    // החזר פירוט מלא כולל request id
     throw new HttpError(resp.status, `OpenAI ${resp.status}`, {
       error: (jsonOrText?.error ?? jsonOrText ?? null),
       full_response: jsonOrText ?? null,
