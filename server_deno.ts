@@ -1,10 +1,10 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs via text.format.json_schema
+// Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs via text.format
 //
 // ENV:
 // OPENAI_API_KEY=sk-...
 // OPENAI_MODEL=gpt-5.1           // או o4-mini / gpt-4o-mini / gpt-5.1-mini
-// DEBUG=false
+// DEBUG=false                    // בפרודקשן עדיף false; true לדיבוג מקומי
 //
 // Run locally:
 // DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-5.1 deno run --allow-net --allow-env --allow-read server_deno.ts
@@ -21,7 +21,7 @@ const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
-const SAFE_DEBUG_MAX = 600;
+const SAFE_DEBUG_MAX = 800; // אל תזרקו מגילות ללקוח
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
@@ -117,10 +117,11 @@ HARD RULES:
 - If a page is mostly code or technical text, do not use it as a source.
 `.trim();
 
-// ===== OpenAI Responses API call =====
+// ===== OpenAI Responses API call (Structured Outputs) =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
+  // JSON Schema שנאכף ע"י Structured Outputs
   const schema = {
     name: "cart_compare_results",
     strict: true,
@@ -175,17 +176,18 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
 
   const body = {
     model: OPENAI_MODEL,
-    instructions: systemPrompt,
-    input: userPrompt,
+    instructions: systemPrompt,   // system
+    input: userPrompt,            // user
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
     max_output_tokens: 1800,
     temperature: 0.2,
 
-    // ✅ הצורה התקינה ב-Responses API
+    // ⚠️ הצורה התקינה: text.format הוא אובייקט, כולל name, ובתוכו json_schema
     text: {
       format: {
         type: "json_schema",
+        name: "cart_compare_results",   // ← חובה! בלעדיו תקבל  Missing required parameter: 'text.format.name'
         json_schema: schema
       }
     }
@@ -212,10 +214,10 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     return { parsed, raw: json, output_text: undefined };
   }
 
-  // fallback: ננסה לפענח טקסט חופשי אם יש (לא מחזירים במלואו ללקוח)
+  // fallback: נסה לפענח טקסט אם משום מה אין output_parsed
   const textOut =
-    (typeof json.output_text === "string" && json.output_text) ||
-    (Array.isArray(json.output) ? json.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
+    (typeof (json as any).output_text === "string" && (json as any).output_text) ||
+    (Array.isArray((json as any).output) ? (json as any).output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
     "";
   const tryParsed = extractJson(String(textOut));
   return { parsed: tryParsed, raw: json, output_text: textOut };
@@ -312,13 +314,13 @@ SEARCH SCOPE:
         status: "no_results",
         message: "Model did not return expected JSON shape",
         results: [],
-        debug: DEBUG ? { output_text: safeText, has_more: (safeText && output_text && (output_text.length>SAFE_DEBUG_MAX)) || false } : undefined,
+        debug: DEBUG ? { output_text: safeText, has_more: (safeText && output_text && (output_text.length>SAFE_DEBUG_MAX)) || false, openai_raw_excerpt: (raw ? JSON.stringify(raw).slice(0, SAFE_DEBUG_MAX) : undefined) } : undefined,
         requestId: id
-      }, 502);
+      }, 400);
     }
 
     const payload:any = { ...parsed, requestId:id };
-    if (DEBUG || body?.include_debug) payload.debug = { openai_raw: raw };
+    if (DEBUG || body?.include_debug) payload.debug = { openai_raw_excerpt: JSON.stringify(raw).slice(0, SAFE_DEBUG_MAX) };
     return c.json(payload, 200);
 
   }catch(e:any){
