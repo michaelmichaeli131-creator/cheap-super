@@ -183,10 +183,10 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     tool_choice: "auto",
     max_output_tokens: 1800,
     temperature: 0.2,
-    // >>> שינוי מהגרסה הישנה: response_format -> text.format + schema
+    // ✅ השדה החדש ב-Responses API
     text: {
       format: "json_schema",
-      schema: schema
+      json_schema: schema
     }
   };
 
