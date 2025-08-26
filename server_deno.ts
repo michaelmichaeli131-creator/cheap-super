@@ -1,10 +1,10 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) — JSON schema via text.format
+// Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs via text.format.json_schema
 //
-// ENV (Deno Deploy / local):
+// ENV:
 // OPENAI_API_KEY=sk-...
 // OPENAI_MODEL=gpt-5.1           // או o4-mini / gpt-4o-mini / gpt-5.1-mini
-// DEBUG=false                     // production=false; אפשר true מקומית
+// DEBUG=false
 //
 // Run locally:
 // DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-5.1 deno run --allow-net --allow-env --allow-read server_deno.ts
@@ -21,11 +21,10 @@ const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
-const SAFE_DEBUG_MAX = 600; // אל תקפיצו דיבוג ענק ללקוח
+const SAFE_DEBUG_MAX = 600;
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
-
 class HttpError extends Error { status:number; constructor(s:number,m:string){ super(m); this.status=s; } }
 
 function extractJson(text:string){
@@ -36,7 +35,6 @@ function extractJson(text:string){
   if (a>=0 && b>a) { try { return JSON.parse(text.slice(a, b+1)); } catch {} }
   return null;
 }
-
 function decodeHtmlEntities(s: string): string {
   if (!s) return "";
   return s
@@ -59,7 +57,7 @@ function cleanText(s: string, maxLen = 280): string {
   return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
 }
 
-// ===== System Prompt (קשוח + סינון מקורות) =====
+// ===== System Prompt =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
@@ -69,7 +67,7 @@ INPUTS PROVIDED:
 - list_text (free-form shopping list)
 
 TOOLS AVAILABLE:
-- web_search: use it to find current, real prices from real Israeli stores (supermarkets, e-commerce, comparison sites).
+- web_search: use it to find current, real prices from real Israeli stores.
   Prefer product/store pages over blogs/news.
 
 TASK:
@@ -114,12 +112,12 @@ HARD RULES:
 - Currency symbol must be "₪" for Israel.
 - No zeros unless page explicitly shows 0.
 - Absolutely NO TEXT OUTSIDE JSON.
-- Ignore code repositories, source files, developer docs/blogs (e.g., GitHub/Gist/NPM/StackOverflow).
-- Focus ONLY on Israeli retail product/store pages with explicit prices (e.g., rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, mega.co.il, osherad.co.il).
+- Ignore code repositories / developer docs / blogs (GitHub/Gist/NPM/etc.).
+- Focus ONLY on Israeli retail product/store pages with explicit prices (rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il, etc.).
 - If a page is mostly code or technical text, do not use it as a source.
 `.trim();
 
-// ===== OpenAI Responses API (web_search) — JSON schema via text.format =====
+// ===== OpenAI Responses API call =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
@@ -177,16 +175,19 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
 
   const body = {
     model: OPENAI_MODEL,
-    instructions: systemPrompt,   // system
-    input: userPrompt,            // user
+    instructions: systemPrompt,
+    input: userPrompt,
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
     max_output_tokens: 1800,
     temperature: 0.2,
-    // ✅ השדה החדש ב-Responses API
+
+    // ✅ הצורה התקינה ב-Responses API
     text: {
-      format: "json_schema",
-      json_schema: schema
+      format: {
+        type: "json_schema",
+        json_schema: schema
+      }
     }
   };
 
@@ -205,13 +206,13 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     throw new HttpError(resp.status, `OpenAI ${resp.status}: ${JSON.stringify(json)}`);
   }
 
-  // עם text.format=json_schema נקבל output_parsed
+  // עם Structured Outputs נקבל output_parsed
   const parsed = (json.output_parsed ?? null);
   if (parsed && parsed.status === "ok" && Array.isArray(parsed.results)) {
     return { parsed, raw: json, output_text: undefined };
   }
 
-  // fallback: אם משום מה אין output_parsed — ננסה לפענח טקסט (לא מחזירים ללקוח במלואו)
+  // fallback: ננסה לפענח טקסט חופשי אם יש (לא מחזירים במלואו ללקוח)
   const textOut =
     (typeof json.output_text === "string" && json.output_text) ||
     (Array.isArray(json.output) ? json.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
@@ -240,7 +241,7 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
-// תצוגת פרומפט+אינפוט (בלי להריץ מודל) — דיבוג
+// דיבוג פרומפט (לא מריץ מודל)
 app.get("/api/llm_preview", async (c)=>{
   if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
   const id = rid();
@@ -257,7 +258,7 @@ radius_km: ${radius_km}
 list_text: ${list_text}
 
 SEARCH SCOPE:
-- Use web_search only on Israeli retailer domains (rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, mega.co.il, osherad.co.il).
+- Use web_search only on Israeli retailer domains (rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il).
 - Ignore GitHub/Gist/NPM/docs/blogs.
 
 NOTE: Return STRICT JSON only (see schema in system instructions).`;
@@ -269,7 +270,7 @@ NOTE: Return STRICT JSON only (see schema in system instructions).`;
   });
 });
 
-// חיפוש ראשי — OpenAI web_search בלבד
+// חיפוש ראשי
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
@@ -300,7 +301,7 @@ INSTRUCTIONS:
 - Return STRICT JSON only (see schema in system instructions).
 
 SEARCH SCOPE:
-- Allowed retailer domains (not exhaustive): rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, mega.co.il, osherad.co.il.
+- Allowed retailer domains (not exhaustive): rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il.
 - Ignore code repositories, developer docs/blogs and technical pages.`;
 
     const { parsed, raw, output_text } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
