@@ -91,7 +91,7 @@ HARD RULES:
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // Define the function tool schema once (Pydantic-style structure expressed as JSON Schema)
+  // Define the function tool schema (JSON Schema)
   const submitResultsFunction = {
     type: "function",
     name: "submit_results",
@@ -158,8 +158,10 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
       { type: "web_search" },                        // built-in web search
       submitResultsFunction                           // our function tool for structured output
     ],
-    // Force the model to return via the function we defined (so we can read its arguments reliably)
-    tool_choice: { type: "function", function: { name: "submit_results" } },
+    // ✅ Correct way to force a specific function with Responses API:
+    //    tool_choice must be { type: "function", name: "<func_name>" }
+    //    (no nested "function" object)
+    tool_choice: { type: "function", name: "submit_results" },
     // no temperature (some models don’t support it)
     max_output_tokens: 1800
   };
@@ -192,48 +194,42 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     });
   }
 
-  // We asked the model to call the function tool.
-  // In the Responses API, tool calls appear under `output` entries with type === "tool_call".
-  // We just need the arguments of the function call (JSON string) — no need for a follow-up.
-  // Docs: function calling & tool_choice. 
-  // (tool result execution isn't required here; we only need the args).  :contentReference[oaicite:1]{index=1}
+  // Parse the tool call result (Responses API returns tool calls in output list)
   const outputs = Array.isArray(json?.output) ? json.output : [];
-  const toolCall = outputs.find((p:any)=> p?.type === "tool_call" && p?.tool === "submit_results");
-  if (!toolCall || !toolCall?.function?.arguments) {
-    // Try alternate shape (some SDKs place under p.content / p.function)
-    const alt = outputs.find((p:any)=> p?.type === "tool_call" && p?.function?.name === "submit_results");
-    const argsStr = alt?.function?.arguments ?? toolCall?.function?.arguments ?? null;
-    if (!argsStr) {
-      // As a last resort, try output_text -> fenced JSON
-      const outputText = typeof json?.output_text === "string" ? json.output_text : "";
-      const tryParsed = extractJson(outputText);
-      if (!tryParsed) {
-        throw new HttpError(400, "Model did not return a submit_results tool call", {
-          output_text_excerpt: outputText.slice(0, SAFE_DEBUG_MAX),
-          raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
-          x_request_id: requestIdHeader
-        });
+  // look for standard shape
+  let argsStr: string | null =
+    outputs.find((p:any)=> p?.type === "tool_call" && (p?.tool === "submit_results" || p?.function?.name === "submit_results"))
+      ?.function?.arguments ?? null;
+
+  // fallback: scan all tool_call entries and take the last submit_results
+  if (!argsStr) {
+    for (const p of outputs) {
+      if (p?.type === "tool_call" && p?.function?.name === "submit_results" && typeof p?.function?.arguments === "string") {
+        argsStr = p.function.arguments;
       }
-      return { parsed: tryParsed, raw: json, request_id: requestIdHeader };
     }
-    try {
-      const parsed = JSON.parse(argsStr);
-      return { parsed, raw: json, request_id: requestIdHeader };
-    } catch (e:any) {
-      throw new HttpError(400, "submit_results.arguments is not valid JSON", {
-        arguments_excerpt: String(argsStr).slice(0, SAFE_DEBUG_MAX),
+  }
+
+  if (!argsStr) {
+    // last resort: try to extract from output_text (rare)
+    const outputText = typeof json?.output_text === "string" ? json.output_text : "";
+    const tryParsed = extractJson(outputText);
+    if (!tryParsed) {
+      throw new HttpError(400, "Model did not return a submit_results tool call", {
+        output_text_excerpt: outputText.slice(0, SAFE_DEBUG_MAX),
         raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
         x_request_id: requestIdHeader
       });
     }
+    return { parsed: tryParsed, raw: json, request_id: requestIdHeader };
   }
 
   try {
-    const parsed = JSON.parse(toolCall.function.arguments);
+    const parsed = JSON.parse(argsStr);
     return { parsed, raw: json, request_id: requestIdHeader };
-  } catch (e:any) {
+  } catch {
     throw new HttpError(400, "submit_results.arguments is not valid JSON", {
-      arguments_excerpt: String(toolCall.function.arguments).slice(0, SAFE_DEBUG_MAX),
+      arguments_excerpt: String(argsStr).slice(0, SAFE_DEBUG_MAX),
       raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
       x_request_id: requestIdHeader
     });
@@ -269,7 +265,7 @@ app.get("/api/llm_preview", async (c)=>{
   const list_text = cleanText(c.req.query("list_text") || "");
   if (!address || !list_text){
     return c.json({ status:"need_input", needed:["address","list_text"], requestId:id }, 400);
-  }
+    }
 
   const userPrompt =
 `address: ${address}
