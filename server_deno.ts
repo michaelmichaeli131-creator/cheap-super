@@ -1,13 +1,12 @@
 // server_deno.ts
 // Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs (json_schema) + full error debug
 //
-// ENV:
-// OPENAI_API_KEY=sk-...
-// OPENAI_MODEL=gpt-5.1        // או gpt-4o-mini / gpt-5.1-mini
-// DEBUG=false                  // true לדיבוג מקומי
-//
-// Run:
-// DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-5.1 deno run --allow-net --allow-env --allow-read server_deno.ts
+// ENV (set before run):
+//   OPENAI_API_KEY=sk-...            (required)
+//   OPENAI_MODEL=gpt-4.1             (recommended stable model with web_search)
+//   DEBUG=false                      (true for extra debug)
+// Run (local):
+//   DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1 deno run --allow-net --allow-env --allow-read server_deno.ts
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -17,11 +16,11 @@ const app = new Hono();
 
 // ===== ENV =====
 const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
-const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1";
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-4.1";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
-const SAFE_DEBUG_MAX = 1500;
+const SAFE_DEBUG_MAX = 2000;
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
@@ -52,7 +51,7 @@ function stripBidiControls(s: string): string {
   return s.replace(BIDI, "");
 }
 function normalizeSpaces(s: string): string { return s.replace(/\s+/g, " ").trim(); }
-function cleanText(s: string, maxLen = 280): string {
+function cleanText(s: string, maxLen = 400): string {
   const out = normalizeSpaces(stripBidiControls(decodeHtmlEntities(s)));
   return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
 }
@@ -119,8 +118,7 @@ HARD RULES:
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // JSON Schema — ב-strict כל אובייקט חייב required שכולל את כל keys שב-properties
-  // לשדות "אופציונליים" נשתמש ב-nullable (type: ["string","null"]) אך עדיין נשים אותם ב-required.
+  // Strict JSON Schema (nullable optional fields are still in "required", with type ["string","null"])
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -129,7 +127,6 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
       status: { type: "string", enum: ["ok"] },
       results: {
         type: "array",
-        minItems: 1,
         items: {
           type: "object",
           additionalProperties: false,
@@ -154,7 +151,6 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
             notes: { type: ["string","null"] },
             basket: {
               type: "array",
-              minItems: 1,
               items: {
                 type: "object",
                 additionalProperties: false,
@@ -195,18 +191,16 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     model: OPENAI_MODEL,
     instructions: systemPrompt,
     input: userPrompt,
-    tools: [{ type: "web_search" }], // built-in web search tool
+    // Built-in web search tool:
+    tools: [{ type: "web_search" }],
     tool_choice: "auto",
-    // temperature הוסר כדי למנוע 400 במודלים שאינם תומכים (GPT-5)
+    // no temperature (unsupported in some models)
     max_output_tokens: 1800,
-
-    // Structured Outputs per Responses API:
-    // text.format = { type: "json_schema", name, schema }
     text: {
       format: {
         type: "json_schema",
         name: "cart_compare_results",
-        schema: schema
+        schema
       }
     }
   };
@@ -224,13 +218,11 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
 
   const requestIdHeader = resp.headers.get("x-request-id") || resp.headers.get("openai-request-id") || null;
 
-  // נסה לקרוא JSON; אם לא, טקסט
   let jsonOrText: any = null;
   try { jsonOrText = await resp.json(); }
   catch { try { jsonOrText = await resp.text(); } catch { jsonOrText = null; } }
 
   if (!resp.ok) {
-    // החזר פירוט מלא כולל request id
     throw new HttpError(resp.status, `OpenAI ${resp.status}`, {
       error: (jsonOrText?.error ?? jsonOrText ?? null),
       full_response: jsonOrText ?? null,
@@ -238,13 +230,13 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     });
   }
 
-  // עם Structured Outputs נקבל output_parsed
+  // With Structured Outputs we expect output_parsed
   const parsed = (jsonOrText?.output_parsed ?? null);
   if (parsed && parsed.status === "ok" && Array.isArray(parsed.results)) {
     return { parsed, raw: jsonOrText, request_id: requestIdHeader };
   }
 
-  // fallback: חילוץ JSON מטקסט חופשי
+  // Fallback: try to extract JSON from textual output (rare, but helpful in debugging)
   const outputText =
     (typeof jsonOrText?.output_text === "string" && jsonOrText.output_text) ||
     (Array.isArray(jsonOrText?.output) ? jsonOrText.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
@@ -253,6 +245,7 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
   if (!tryParsed) {
     throw new HttpError(400, "Model did not return expected JSON shape (no output_parsed)", {
       output_text_excerpt: outputText ? outputText.slice(0, SAFE_DEBUG_MAX) : "",
+      raw_excerpt: JSON.stringify(jsonOrText ?? "").slice(0, SAFE_DEBUG_MAX),
       x_request_id: requestIdHeader
     });
   }
@@ -279,7 +272,7 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
-// נקודת בדיקה שמציגה את הפרומפטים ללא הרצת מודל (DEBUG בלבד)
+// Preview prompts without calling the model (DEBUG only)
 app.get("/api/llm_preview", async (c)=>{
   if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
   const id = rid();
@@ -308,7 +301,7 @@ Return STRICT JSON (see system schema).`;
   });
 });
 
-// חיפוש ראשי
+// Main search
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
