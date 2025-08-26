@@ -22,6 +22,7 @@ const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
 const GOOGLE_CSE_CX = Deno.env.get("GOOGLE_CSE_CX") ?? "";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
+// (אזהרת לוג בלבד)
 const RECOMMENDED_MODELS = new Set<string>([
   "claude-sonnet-4-20250514",
   "claude-3-7-sonnet-20250219",
@@ -51,6 +52,11 @@ function extractJson(text:string){
 class HttpError extends Error {
   status: number;
   constructor(status:number, message:string){ super(message); this.status = status; }
+}
+
+// Extract hostname from URL
+function hostnameOf(u: string): string {
+  try { return new URL(u).hostname || ""; } catch { return ""; }
 }
 
 // ===== Prompt =====
@@ -214,6 +220,50 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
+// ---- דיבוג: תצוגת payload בלי קריאה ל-LLM (DEBUG בלבד) ----
+app.get("/api/llm_preview", async (c) => {
+  if (!DEBUG) {
+    return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
+  }
+  const id = rid();
+  const address = c.req.query("address") || "";
+  const radius_km = Number(c.req.query("radius_km") || "5");
+  const list_text = c.req.query("list_text") || "";
+  if (!address || !list_text) {
+    return c.json({ status:"need_input", needed:["address","list_text"], requestId:id }, 400);
+  }
+
+  const q1 = `site:co.il ${list_text} מחיר קנייה ${address}`;
+  const q2 = `${list_text} מחירים ${address}`;
+
+  const [r1, r2] = await Promise.all([googleCse(id, q1, 8), googleCse(id, q2, 8)]);
+  const snippets = dedupByUrl([...r1, ...r2]);
+
+  const domainCounts = snippets.reduce((acc: Record<string, number>, s) => {
+    const h = hostnameOf(s.url);
+    if (!h) return acc;
+    acc[h] = (acc[h] || 0) + 1;
+    return acc;
+  }, {});
+
+  const userPayload =
+`address: ${address}
+radius_km: ${radius_km}
+list_text: ${list_text}
+
+web_snippets:
+${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}`).join("\n")}
+`.trim();
+
+  return c.json({
+    status:"ok",
+    address, radius_km, list_text,
+    debug: { snippets, domains: domainCounts, llm_payload: userPayload },
+    requestId: id
+  });
+});
+
+// ---- /api/search (עם debug.snippets/domains/llm_payload לפי דגלים) ----
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
@@ -237,11 +287,22 @@ app.post("/api/search", async (c)=>{
       c.req.query("debug") === "1" ||
       (typeof body?.include_snippets === "boolean" && body.include_snippets === true);
 
+    const wantPayload =
+      c.req.query("debug") === "1" ||
+      (typeof body?.include_payload === "boolean" && body.include_payload === true);
+
     const q1 = `site:co.il ${list_text} מחיר קנייה ${address}`;
     const q2 = `${list_text} מחירים ${address}`;
 
     const [r1,r2] = await Promise.all([googleCse(id,q1,8), googleCse(id,q2,8)]);
     const snippets = dedupByUrl([...r1, ...r2]);
+
+    const domainCounts = snippets.reduce((acc: Record<string, number>, s) => {
+      const h = hostnameOf(s.url);
+      if (!h) return acc;
+      acc[h] = (acc[h] || 0) + 1;
+      return acc;
+    }, {});
 
     const userPayload =
 `address: ${address}
@@ -256,16 +317,21 @@ ${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}
 
     if (!out || out.status!=="ok" || !Array.isArray(out.results)) {
       info(id, "Unexpected Claude shape", out);
+      const extraDebug: any = wantSnippets ? { snippets, domains: domainCounts } : undefined;
+      if (extraDebug && wantPayload) extraDebug.llm_payload = userPayload;
       return c.json({
         status:"no_results",
         message:"Unexpected shape from LLM",
         results:[],
-        debug: wantSnippets ? { snippets } : undefined,
+        debug: extraDebug,
         requestId:id
       }, 502);
     }
 
-    const payload = wantSnippets ? { ...out, debug: { snippets }, requestId:id } : { ...out, requestId:id };
+    const extraDebug: any = wantSnippets ? { snippets, domains: domainCounts } : undefined;
+    if (extraDebug && wantPayload) extraDebug.llm_payload = userPayload;
+
+    const payload = { ...out, requestId:id, ...(extraDebug ? { debug: extraDebug } : {}) };
     return c.json(payload, 200);
 
   }catch(e:any){
