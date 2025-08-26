@@ -1,11 +1,12 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs (json_schema) + full error debug
+// Deno + Hono + OpenAI Responses API (web_search) — GPT-4.1 + Function Calling (stable) + full error debug
 //
-// ENV (set before run):
+// ENV (before run):
 //   OPENAI_API_KEY=sk-...            (required)
-//   OPENAI_MODEL=gpt-4.1             (recommended stable model with web_search)
+//   OPENAI_MODEL=gpt-4.1             (stable model)
 //   DEBUG=false                      (true for extra debug)
-// Run (local):
+//
+// Run locally:
 //   DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1 deno run --allow-net --allow-env --allow-read server_deno.ts
 
 import { Hono } from "npm:hono";
@@ -76,112 +77,73 @@ TASK:
 4) Sort stores by total_price ascending (cheapest → expensive).
 5) If a price is not explicitly found, estimate reasonably, set lower match_confidence (e.g., 0.4), and add "notes".
 
-STRICT JSON OUTPUT ONLY (no extra text):
-{
-  "status": "ok",
-  "results": [
-    {
-      "rank": 1,
-      "store_name": "string",
-      "address": "string",
-      "distance_km": 2.1,
-      "currency": "₪",
-      "total_price": 123.45,
-      "notes": "optional string",
-      "basket": [
-        {
-          "name": "string",
-          "brand": "string (or empty)",
-          "quantity": 1,
-          "unit_price": 12.34,
-          "line_total": 12.34,
-          "product_url": "https://...",
-          "source_domain": "example.co.il",
-          "match_confidence": 0.0,
-          "substitution": false,
-          "notes": "optional"
-        }
-      ],
-      "match_overall": 0.0
-    }
-  ]
-}
+IMPORTANT:
+- If you cannot find any valid Israeli store/product prices, still return a valid result object with results: [].
+- ABSOLUTELY NO free-form text; you MUST call the function tool submit_results with the final structured JSON only.
 
 HARD RULES:
 - Currency symbol must be "₪" for Israel.
 - No zeros unless page explicitly shows 0.
-- Absolutely NO TEXT OUTSIDE JSON.
 - Focus ONLY on Israeli retail product/store pages with explicit prices (e.g., rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il).
 `.trim();
 
-// ===== OpenAI Responses API call (Structured Outputs + full error capture) =====
+// ===== OpenAI Responses API call (Function Calling + web_search) =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // IMPORTANT: With Structured Outputs, 'required' must list *every* key in 'properties' (even nullable).
-  // Docs/discussions confirm this behavior. :contentReference[oaicite:2]{index=2}
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["status", "results"],
-    properties: {
-      status: { type: "string", enum: ["ok"] },
-      results: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: [
-            "rank",
-            "store_name",
-            "address",
-            "distance_km",
-            "currency",
-            "total_price",
-            "notes",          // ← include in required
-            "basket",
-            "match_overall"
-          ],
-          properties: {
-            rank: { type: "integer" },
-            store_name: { type: "string" },
-            address: { type: "string" },
-            distance_km: { type: "number" },
-            currency: { type: "string" },
-            total_price: { type: "number" },
-            notes: { type: ["string","null"] },
-            basket: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                required: [
-                  "name",
-                  "brand",
-                  "quantity",
-                  "unit_price",
-                  "line_total",
-                  "product_url",
-                  "source_domain",
-                  "match_confidence",
-                  "substitution",
-                  "notes"          // ← include in required
-                ],
-                properties: {
-                  name: { type: "string" },
-                  brand: { type: ["string","null"] },
-                  quantity: { type: "number" },
-                  unit_price: { type: "number" },
-                  line_total: { type: "number" },
-                  product_url: { type: "string" },
-                  source_domain: { type: "string" },
-                  match_confidence: { type: "number", minimum: 0, maximum: 1 },
-                  substitution: { type: "boolean" },
-                  notes: { type: ["string","null"] }
+  // Define the function tool schema once (Pydantic-style structure expressed as JSON Schema)
+  const submitResultsFunction = {
+    type: "function",
+    name: "submit_results",
+    description: "Return the final price comparison JSON. Call this exactly once at the end.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "results"],
+      properties: {
+        status: { type: "string", enum: ["ok"] },
+        results: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "rank","store_name","address","distance_km",
+              "currency","total_price","basket","match_overall","notes"
+            ],
+            properties: {
+              rank: { type: "integer" },
+              store_name: { type: "string" },
+              address: { type: "string" },
+              distance_km: { type: "number" },
+              currency: { type: "string" },
+              total_price: { type: "number" },
+              notes: { type: ["string","null"] },
+              basket: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: [
+                    "name","brand","quantity","unit_price","line_total",
+                    "product_url","source_domain","match_confidence","substitution","notes"
+                  ],
+                  properties: {
+                    name: { type: "string" },
+                    brand: { type: ["string","null"] },
+                    quantity: { type: "number" },
+                    unit_price: { type: "number" },
+                    line_total: { type: "number" },
+                    product_url: { type: "string" },
+                    source_domain: { type: "string" },
+                    match_confidence: { type: "number", minimum: 0, maximum: 1 },
+                    substitution: { type: "boolean" },
+                    notes: { type: ["string","null"] }
+                  }
                 }
-              }
-            },
-            match_overall: { type: "number", minimum: 0, maximum: 1 }
+              },
+              match_overall: { type: "number", minimum: 0, maximum: 1 }
+            }
           }
         }
       }
@@ -189,22 +151,17 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
   } as const;
 
   const body: any = {
-    model: OPENAI_MODEL,
+    model: OPENAI_MODEL,                             // gpt-4.1
     instructions: systemPrompt,
     input: userPrompt,
-    // Built-in web search tool (official doc). :contentReference[oaicite:3]{index=3}
-    tools: [{ type: "web_search" }],
-    // Force using the tool so it actually browses. :contentReference[oaicite:4]{index=4}
-    tool_choice: "required",
+    tools: [
+      { type: "web_search" },                        // built-in web search
+      submitResultsFunction                           // our function tool for structured output
+    ],
+    // Force the model to return via the function we defined (so we can read its arguments reliably)
+    tool_choice: { type: "function", function: { name: "submit_results" } },
     // no temperature (some models don’t support it)
-    max_output_tokens: 1800,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "cart_compare_results",
-        schema
-      }
-    }
+    max_output_tokens: 1800
   };
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
@@ -220,38 +177,67 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
 
   const requestIdHeader = resp.headers.get("x-request-id") || resp.headers.get("openai-request-id") || null;
 
-  let jsonOrText: any = null;
-  try { jsonOrText = await resp.json(); }
-  catch { try { jsonOrText = await resp.text(); } catch { jsonOrText = null; } }
+  let json:any = null;
+  try { json = await resp.json(); }
+  catch {
+    const txt = await resp.text().catch(()=>null);
+    throw new HttpError(502, "OpenAI non-JSON response", { text_excerpt: txt?.slice(0, SAFE_DEBUG_MAX), x_request_id: requestIdHeader });
+  }
 
   if (!resp.ok) {
     throw new HttpError(resp.status, `OpenAI ${resp.status}`, {
-      error: (jsonOrText?.error ?? jsonOrText ?? null),
-      full_response: jsonOrText ?? null,
+      error: (json?.error ?? null),
+      full_response: json ?? null,
       x_request_id: requestIdHeader
     });
   }
 
-  // With Structured Outputs we expect output_parsed
-  const parsed = (jsonOrText?.output_parsed ?? null);
-  if (parsed && parsed.status === "ok" && Array.isArray(parsed.results)) {
-    return { parsed, raw: jsonOrText, request_id: requestIdHeader };
+  // We asked the model to call the function tool.
+  // In the Responses API, tool calls appear under `output` entries with type === "tool_call".
+  // We just need the arguments of the function call (JSON string) — no need for a follow-up.
+  // Docs: function calling & tool_choice. 
+  // (tool result execution isn't required here; we only need the args).  :contentReference[oaicite:1]{index=1}
+  const outputs = Array.isArray(json?.output) ? json.output : [];
+  const toolCall = outputs.find((p:any)=> p?.type === "tool_call" && p?.tool === "submit_results");
+  if (!toolCall || !toolCall?.function?.arguments) {
+    // Try alternate shape (some SDKs place under p.content / p.function)
+    const alt = outputs.find((p:any)=> p?.type === "tool_call" && p?.function?.name === "submit_results");
+    const argsStr = alt?.function?.arguments ?? toolCall?.function?.arguments ?? null;
+    if (!argsStr) {
+      // As a last resort, try output_text -> fenced JSON
+      const outputText = typeof json?.output_text === "string" ? json.output_text : "";
+      const tryParsed = extractJson(outputText);
+      if (!tryParsed) {
+        throw new HttpError(400, "Model did not return a submit_results tool call", {
+          output_text_excerpt: outputText.slice(0, SAFE_DEBUG_MAX),
+          raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
+          x_request_id: requestIdHeader
+        });
+      }
+      return { parsed: tryParsed, raw: json, request_id: requestIdHeader };
+    }
+    try {
+      const parsed = JSON.parse(argsStr);
+      return { parsed, raw: json, request_id: requestIdHeader };
+    } catch (e:any) {
+      throw new HttpError(400, "submit_results.arguments is not valid JSON", {
+        arguments_excerpt: String(argsStr).slice(0, SAFE_DEBUG_MAX),
+        raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
+        x_request_id: requestIdHeader
+      });
+    }
   }
 
-  // Fallback: try to extract JSON from textual output (rare, but helpful in debugging)
-  const outputText =
-    (typeof jsonOrText?.output_text === "string" && jsonOrText.output_text) ||
-    (Array.isArray(jsonOrText?.output) ? jsonOrText.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
-    "";
-  const tryParsed = extractJson(outputText);
-  if (!tryParsed) {
-    throw new HttpError(400, "Model did not return expected JSON shape (no output_parsed)", {
-      output_text_excerpt: outputText ? outputText.slice(0, SAFE_DEBUG_MAX) : "",
-      raw_excerpt: JSON.stringify(jsonOrText ?? "").slice(0, SAFE_DEBUG_MAX),
+  try {
+    const parsed = JSON.parse(toolCall.function.arguments);
+    return { parsed, raw: json, request_id: requestIdHeader };
+  } catch (e:any) {
+    throw new HttpError(400, "submit_results.arguments is not valid JSON", {
+      arguments_excerpt: String(toolCall.function.arguments).slice(0, SAFE_DEBUG_MAX),
+      raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
       x_request_id: requestIdHeader
     });
   }
-  return { parsed: tryParsed, raw: jsonOrText, request_id: requestIdHeader };
 }
 
 // ===== API =====
@@ -294,8 +280,8 @@ SEARCH SCOPE:
 - Only Israeli retailer/product pages with explicit prices.
 - Prefer store pages; ignore blogs/docs/dev sites.
 
-If you cannot find any valid store/product prices, RETURN: {"status":"ok","results":[]}
-Return STRICT JSON (see system schema).`;
+If you cannot find any valid store/product prices, return via function: {"status":"ok","results":[]}.
+Call submit_results exactly once with the final JSON.`;
 
   return c.json({
     status:"ok",
@@ -332,8 +318,8 @@ INSTRUCTIONS:
 - Use web_search to collect real prices (₪) from Israeli retailers near the address.
 - Include product_url and source_domain for each line when available.
 - If a price is missing, estimate with lower confidence and add notes.
-- If you cannot find any valid store/product prices, RETURN: {"status":"ok","results":[]}
-- Return STRICT JSON only (see schema in system).`;
+- If you cannot find any valid store/product prices, return via function: {"status":"ok","results":[]}.
+- Call submit_results exactly once with the final JSON (no free text).`;
 
     const { parsed, raw, request_id } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
     const payload:any = { ...parsed, requestId:id, openai_request_id: request_id ?? undefined };
@@ -344,7 +330,7 @@ INSTRUCTIONS:
     const status = typeof e?.status === "number" ? e.status : 500;
     const message = e?.message || String(e);
     const payload:any = { status:"error", message, requestId:id };
-    if (e?.payload) payload.details = e.payload; // error/full_response/x_request_id
+    if (e?.payload) payload.details = e.payload;
     err(id, "search handler failed", { status, message, details: e?.payload });
     return c.json(payload, status);
   }
