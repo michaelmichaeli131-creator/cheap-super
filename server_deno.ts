@@ -1,14 +1,13 @@
 // server_deno.ts
-// Hono (Deno) + OpenAI Responses API (built-in web_search tool)
-// Flow: client -> /api/search -> OpenAI (web_search) -> STRICT JSON result
+// Deno + Hono + OpenAI Responses API (built-in web_search) — JSON schema enforced
 //
 // ENV (Deno Deploy / local):
 // OPENAI_API_KEY=sk-...
-// OPENAI_MODEL=o4-mini            (או gpt-4o-mini / gpt-4o)
-// DEBUG=true                      (לא חובה; מפעיל /api/llm_preview ועוד)
+// OPENAI_MODEL=gpt-5.1            (או o4-mini / gpt-4o-mini)
+// DEBUG=true                      (לא חובה; מוסיף דיבוג)
 //
 // Run locally:
-// DEBUG=true OPENAI_API_KEY=sk-... deno run --allow-net --allow-env --allow-read server_deno.ts
+// DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-5.1 deno run --allow-net --allow-env --allow-read server_deno.ts
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -18,7 +17,7 @@ const app = new Hono();
 
 // ===== ENV =====
 const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
-const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "o4-mini"; // או "gpt-4o-mini"
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1"; // ברירת מחדל — ניתן לשנות ל-o4-mini/gpt-4o-mini
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
@@ -60,8 +59,7 @@ function cleanText(s: string, maxLen = 280): string {
 }
 
 // ===== System Prompt (קשוח) =====
-// גרסה מותאמת ל-web_search המובנה (אין עוד web_snippets מבחוץ)
-const PROMPT_CLAUDE = `
+const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
 INPUTS PROVIDED:
@@ -116,18 +114,75 @@ HARD RULES:
 - Absolutely NO TEXT OUTSIDE JSON.
 `.trim();
 
-// ===== OpenAI Responses API (web_search tool) =====
-// Docs: tools include "web_search" in Responses API. The "instructions" param acts like a system prompt. :contentReference[oaicite:1]{index=1}
+// ===== OpenAI Responses API (web_search) — JSON schema enforced =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
+  // סכמה קפדנית לפלט
+  const schema = {
+    name: "cart_compare_results",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "results"],
+      properties: {
+        status: { type: "string", enum: ["ok"] },
+        results: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["rank","store_name","address","distance_km","currency","total_price","basket","match_overall"],
+            properties: {
+              rank: { type: "integer" },
+              store_name: { type: "string" },
+              address: { type: "string" },
+              distance_km: { type: "number" },
+              currency: { type: "string" },
+              total_price: { type: "number" },
+              notes: { type: "string" },
+              basket: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["name","brand","quantity","unit_price","line_total","product_url","source_domain","match_confidence","substitution"],
+                  properties: {
+                    name: { type: "string" },
+                    brand: { type: "string" },
+                    quantity: { type: "number" },
+                    unit_price: { type: "number" },
+                    line_total: { type: "number" },
+                    product_url: { type: "string" },
+                    source_domain: { type: "string" },
+                    match_confidence: { type: "number" },
+                    substitution: { type: "boolean" },
+                    notes: { type: "string" }
+                  }
+                }
+              },
+              match_overall: { type: "number" }
+            }
+          }
+        }
+      }
+    }
+  } as const;
+
   const body = {
     model: OPENAI_MODEL,
-    instructions: systemPrompt,                   // system behavior
-    input: userPrompt,                            // user content
-    tools: [{ type: "web_search" }],              // let model browse the web
-    tool_choice: "auto",                          // allow the model to decide
-    max_output_tokens: 1800
+    instructions: systemPrompt,          // acts like system prompt
+    input: userPrompt,                   // user's payload (address/radius/list)
+    tools: [{ type: "web_search" }],     // let the model browse the web
+    tool_choice: "auto",
+    max_output_tokens: 1800,
+    response_format: {                   // enforce JSON
+      type: "json_schema",
+      json_schema: schema
+    },
+    temperature: 0.2
   };
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
@@ -145,17 +200,19 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     throw new HttpError(resp.status, `OpenAI ${resp.status}: ${JSON.stringify(json)}`);
   }
 
-  // Responses API returns output_text for convenience; fallbacks for safety
+  // בשימוש עם json_schema — נקבל output_parsed
+  const parsed = (json.output_parsed ?? null);
+  if (parsed && parsed.status === "ok" && Array.isArray(parsed.results)) {
+    return { parsed, raw: json, output_text: undefined };
+  }
+
+  // fallback: ננסה לפענח טקסט אם משום מה אין output_parsed
   const text =
     (typeof json.output_text === "string" && json.output_text) ||
     (Array.isArray(json.output) ? json.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
     "";
-
-  const parsed = extractJson(String(text));
-  if (parsed) return { parsed, raw: json, output_text: text };
-
-  // אם המודל לא החזיר JSON תקין—נחזיר raw לדיבוג
-  return { parsed: null, raw: json, output_text: text };
+  const tryParsed = extractJson(String(text));
+  return { parsed: tryParsed, raw: json, output_text: text };
 }
 
 // ===== API =====
@@ -178,7 +235,7 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
-// תצוגה מה נשלח בפועל ל-LLM (בלי חיפוש חיצוני) — דיבוג
+// תצוגת הפרומפט+אינפוט (בלי להריץ מודל) — דיבוג
 app.get("/api/llm_preview", async (c)=>{
   if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
   const id = rid();
@@ -199,14 +256,14 @@ NOTE: Use web_search to find current prices in ₪ on Israeli stores and return 
   return c.json({
     status:"ok",
     debug:{
-      instructions: PROMPT_CLAUDE,
+      instructions: PROMPT_SYSTEM,
       user_input: userPrompt
     },
     requestId: id
   });
 });
 
-// החיפוש הראשי — OpenAI web_search בלבד
+// חיפוש ראשי — OpenAI web_search בלבד (מתעלם מ-?provider=... אם נשלח מהלקוח)
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
@@ -236,10 +293,9 @@ INSTRUCTIONS:
 - If price not explicit, estimate (lower confidence) and add notes.
 - Return STRICT JSON only (see schema in system instructions).`;
 
-    const { parsed, raw, output_text } = await callOpenAIResponses(PROMPT_CLAUDE, userPrompt, id);
+    const { parsed, raw, output_text } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
 
     if (!parsed || parsed.status !== "ok" || !Array.isArray(parsed.results)) {
-      // לא קיבלנו JSON תקין—נחזיר דיבוג כדי להבין מה קרה
       return c.json({
         status: "no_results",
         message: "Model did not return expected JSON shape",
@@ -249,7 +305,6 @@ INSTRUCTIONS:
       }, 502);
     }
 
-    // הצלחה
     const payload:any = { ...parsed, requestId:id };
     if (DEBUG || body?.include_debug) payload.debug = { openai_raw: raw };
     return c.json(payload, 200);
@@ -262,7 +317,7 @@ INSTRUCTIONS:
   }
 });
 
-// ===== Static UI (אופציונלי) =====
+// ===== Static UI =====
 app.use("/public/*", serveStatic({ root:"./" }));
 app.use("/assets/*", serveStatic({ root:"./" }));
 
@@ -278,7 +333,7 @@ app.get("/", async (c)=>{
     info(id, "Serving ./public/index.html");
     return c.newResponse(html, 200, { "content-type":"text/html; charset=utf-8" });
   }
-  return c.newResponse(`<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>UI placeholder — add <code>public/index.html</code>.</p>`, 200);
+  return c.newResponse(`<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>Upload <code>public/index.html</code> to show the UI.</p>`, 200);
 });
 
 app.notFound(async (c)=>{
