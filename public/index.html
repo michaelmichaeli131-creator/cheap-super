@@ -27,7 +27,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family
 .input{display:flex;flex-direction:column;gap:8px}
 .input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0b3b6a0e;font-size:16px}
 .radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800}
+.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer}
 .row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb}
 .row+.row{margin-top:10px}.total{font-size:18px;font-weight:900}
 .cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7}
@@ -47,98 +47,99 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
 
 <!-- Screen 1: Landing -->
 <section id="s1" class="screen active">
-<div class="landing">
-<header class="landing-head">
-<div class="brand-mini"><div class="dot"></div><span>CartCompare <b>AI</b></span></div>
-<a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
-</header>
+  <div class="landing">
+    <header class="landing-head">
+      <div class="brand-mini"><div class="dot"></div><span>CartCompare <b>AI</b></span></div>
+      <a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
+    </header>
 
-<div class="landing-center">
-<h1 class="hero-title">מצא/י את סל הקניות הזול לידך</h1>
-<p class="hero-sub">מוצא את הזול במהירות באמצעות AI</p>
+    <div class="landing-center">
+      <h1 class="hero-title">מצא/י את סל הקניות הזול לידך</h1>
+      <p class="hero-sub">מוצא את הזול במהירות באמצעות AI</p>
 
-<div class="badges">
-<span class="badge">⚡ חוסך זמן</span>
-<span class="badge">💸 מחיר הכי זול</span>
-<span class="badge">🤖 Claude (Web) — מומלץ</span>
-</div>
+      <div class="badges">
+        <span class="badge">⚡ חוסך זמן</span>
+        <span class="badge">💸 מחיר הכי זול</span>
+        <span class="badge">🤖 OpenAI (Web) — מומלץ</span>
+      </div>
 
-<button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
-<button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
-</div>
-</div>
+      <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
+      <button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
+    </div>
+  </div>
 </section>
 
 <!-- Screen 2: Address -->
 <section id="s2" class="screen">
-<div class="page">
-<div class="box">
-<div style="font-weight:800;font-size:20px">מה הכתובת שלך?</div>
-<div class="muted" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
-<div class="input" style="margin-top:12px">
-<label class="muted" for="address">כתובת / עיר</label>
-<input id="address" placeholder="למשל: חולון, סוקולוב 10" />
-</div>
-</div>
-</div>
+  <div class="page">
+    <div class="box">
+      <div style="font-weight:800;font-size:20px">מה הכתובת שלך?</div>
+      <div class="muted" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
+      <div class="input" style="margin-top:12px">
+        <label class="muted" for="address">כתובת / עיר</label>
+        <input id="address" placeholder="למשל: חולון, סוקולוב 10" />
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- Screen 3: Radius -->
 <section id="s3" class="screen">
-<div class="page">
-<div class="box">
-<div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
-<div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
-<div class="radius-grid" style="margin-top:12px">
-<button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
-<button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
-<button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
-<button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
-</div>
-<div class="input" style="margin-top:12px">
-<label class="muted" for="radius">או הזן/י ידנית</label>
-<input id="radius" type="number" min="1" step="0.5" placeholder="5" />
-</div>
-</div>
-</div>
+  <div class="page">
+    <div class="box">
+      <div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
+      <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
+      <div class="radius-grid" style="margin-top:12px">
+        <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
+        <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
+        <button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
+        <button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
+      </div>
+      <div class="input" style="margin-top:12px">
+        <label class="muted" for="radius">או הזן/י ידנית</label>
+        <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- Screen 4: List -->
 <section id="s4" class="screen">
-<div class="page">
-<div class="box">
-<div style="font-weight:800;font-size:20px">מה תרצה לקנות?</div>
-<div class="muted" style="margin-top:6px">אפשר טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</div>
-<div class="input" style="margin-top:12px">
-<textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 בירות קלסברג"></textarea>
-</div>
-</div>
-</div>
+  <div class="page">
+    <div class="box">
+      <div style="font-weight:800;font-size:20px">מה תרצה לקנות?</div>
+      <div class="muted" style="margin-top:6px">אפשר טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</div>
+      <div class="input" style="margin-top:12px">
+        <textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 בירות קלסברג"></textarea>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- Screen 5: Results -->
 <section id="s5" class="screen">
-<div class="page">
-<div class="box">
-<div style="display:flex;justify-content:space-between;align-items:center">
-<div style="font-weight:800;font-size:20px">התוצאות</div>
-<span class="pill">Claude (Web)</span>
-</div>
-<div id="summary" class="muted" style="margin-top:6px"></div>
-<div id="results" style="margin-top:12px"></div>
-<div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none"></div>
-<div id="debugWrap" style="display:none;margin-top:12px">
-<details><summary>🔧 Debug JSON</summary><pre id="debugJson" class="debug"></pre></details>
-</div>
-</div>
-</div>
+  <div class="page">
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:800;font-size:20px">התוצאות</div>
+        <span class="pill">OpenAI (Web)</span>
+      </div>
+      <div id="summary" class="muted" style="margin-top:6px"></div>
+      <div id="results" style="margin-top:12px"></div>
+      <div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none"></div>
+      <div id="debugWrap" style="display:none;margin-top:12px">
+        <details><summary>🔧 Debug JSON</summary><pre id="debugJson" class="debug"></pre></details>
+      </div>
+    </div>
+  </div>
 </section>
 
+<!-- CTA -->
 <div class="cta">
-<div class="inner">
-<button id="back" class="btn btn-ghost" type="button">חזרה</button>
-<button id="next" class="btn btn-black" type="button">הבא</button>
-</div>
+  <div class="inner">
+    <button id="back" class="btn btn-ghost" type="button">חזרה</button>
+    <button id="next" class="btn btn-black" type="button">הבא</button>
+  </div>
 </div>
 </div>
 
@@ -163,11 +164,11 @@ const debugJson = document.getElementById('debugJson');
 const isDebug = new URLSearchParams(location.search).get('debug') === '1';
 
 function goto(n){
-step = Math.max(0, Math.min(4, n));
-screens.forEach((s,i)=> s.classList.toggle('active', i===step));
-btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
-btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
-window.scrollTo({ top: 0, behavior: 'smooth' });
+  step = Math.max(0, Math.min(4, n));
+  screens.forEach((s,i)=> s?.classList.toggle('active', i===step));
+  btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
+  btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 goto(0);
 
@@ -176,98 +177,97 @@ howLink?.addEventListener('click', ()=> goto(1));
 gpsSoon?.addEventListener('click', ()=> alert('שימוש ב-GPS יתווסף בקרוב 😊'));
 
 document.querySelectorAll('[data-radius]').forEach(b=>{
-b.addEventListener('click', ()=>{
-document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
-b.dataset.active="1";
-radiusEl.value = b.getAttribute('data-radius');
-goto(step+1);
-});
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
+    b.dataset.active="1";
+    radiusEl.value = b.getAttribute('data-radius');
+    goto(step+1);
+  });
 });
 
 btnBack.addEventListener('click', ()=>{ if(step===0){ return; } goto(step-1); });
 
 btnNext.addEventListener('click', async ()=>{
-if(step===1){ if(!addressEl.value.trim()) return shake(addressEl); return goto(step+1); }
-if(step===2){ if(!radiusEl.value) return shake(radiusEl); return goto(step+1); }
-if(step===3){ if(!listEl.value.trim()) return shake(listEl); return goto(step+1); }
-if(step<4) return goto(step+1);
+  if(step===1){ if(!addressEl.value.trim()) return shake(addressEl); return goto(step+1); }
+  if(step===2){ if(!radiusEl.value) return shake(radiusEl); return goto(step+1); }
+  if(step===3){ if(!listEl.value.trim()) return shake(listEl); return goto(step+1); }
+  if(step<4) return goto(step+1);
 
-// Run search (Claude Web)
-renderSkeleton();
-debugWrap.style.display = isDebug ? 'block' : 'none';
-debugJson.textContent = '';
+  // Run search (OpenAI Web)
+  renderSkeleton();
+  debugWrap.style.display = isDebug ? 'block' : 'none';
+  debugJson.textContent = '';
 
-const payload = {
-address: addressEl.value.trim(),
-radius_km: Number(radiusEl.value || 5),
-list_text: listEl.value.trim()
-};
+  const payload = {
+    address: addressEl.value.trim(),
+    radius_km: Number(radiusEl.value || 5),
+    list_text: listEl.value.trim()
+  };
 
-summaryEl.textContent = `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • מוצרים: ${payload.list_text.split(/\s+/).length} מילים`;
+  summaryEl.textContent =
+    `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • מוצרים: ${payload.list_text.split(/\s+/).length} מילים`;
 
-try{
-const res = await fetch('/api/search', {
-method:'POST', headers:{'Content-Type':'application/json'},
-body: JSON.stringify(payload)
-});
-const data = await res.json();
+  try{
+    const res = await fetch('/api/search?provider=openai', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
 
-loadingEl.style.display = 'none';
-if (isDebug) debugJson.textContent = JSON.stringify(data, null, 2);
+    loadingEl.style.display = 'none';
+    if (isDebug) debugJson.textContent = JSON.stringify(data, null, 2);
 
-if(!res.ok){
-resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
-console.error("API error", data);
-return;
-}
-if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
-resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
-if (data.debug) console.warn("DEBUG", data.debug);
-return;
-}
+    if(!res.ok){
+      resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
+      console.error("API error", data);
+      return;
+    }
+    if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
+      resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
+      if (data.debug) console.warn("DEBUG", data.debug);
+      return;
+    }
 
-// Render rows
-resultsEl.innerHTML = data.results.map(r=>{
-const total = toPrice(r.total_price, r.currency || "₪");
-const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
+    resultsEl.innerHTML = data.results.map(r=>{
+      const total = toPrice(r.total_price, r.currency || "₪");
+      const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
 
-const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
-const unit = toPrice(b.unit_price, r.currency || "₪");
-const line = toPrice(b.line_total, r.currency || "₪");
-const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
-const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}</div>` : '';
-const notes = b.notes ? `<div class="muted">${esc(b.notes)}</div>` : '';
-const conf = (typeof b.match_confidence === 'number') ? `${Math.round(b.match_confidence*100)}%` : '—';
-return `
-<div class="row">
-<div>
-<div><strong>${esc(b.name||'')}</strong>${brand}</div>
-<div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • דיוק: ${conf}</div>
-${src}${notes}
-</div>
-<div class="total">${line}</div>
-</div>`;
-}).join('') : '';
+      const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
+        const line = toPrice(b.line_total, r.currency || "₪");
+        const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
+        const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}</div>` : '';
+        const notes = b.notes ? `<div class="muted">${esc(b.notes)}</div>` : '';
+        const conf = (typeof b.match_confidence === 'number') ? `${Math.round(b.match_confidence*100)}%` : '—';
+        return `
+        <div class="row">
+          <div>
+            <div><strong>${esc(b.name||'')}</strong>${brand}</div>
+            <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • דיוק: ${conf}</div>
+            ${src}${notes}
+          </div>
+          <div class="total">${line}</div>
+        </div>`;
+      }).join('') : '';
 
-const hdr = `
-<div class="row">
-<div>
-<div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong></div>
-<div class="muted" style="font-size:12px">${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo}</div>
-${r.notes ? `<div class="muted">${esc(r.notes)}</div>` : ''}
-</div>
-<div class="total">${total}</div>
-</div>
-`;
+      const hdr = `
+      <div class="row">
+        <div>
+          <div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong></div>
+          <div class="muted" style="font-size:12px">${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo}</div>
+          ${r.notes ? `<div class="muted">${esc(r.notes)}</div>` : ''}
+        </div>
+        <div class="total">${total}</div>
+      </div>
+      `;
 
-return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
-}).join('');
+      return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
+    }).join('');
 
-}catch(err){
-loadingEl.style.display = 'none';
-resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
-console.error("Network error", err);
-}
+  }catch(err){
+    loadingEl.style.display = 'none';
+    resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
+    console.error("Network error", err);
+  }
 });
 
 function renderSkeleton(){ resultsEl.innerHTML=''; loadingEl.style.display='block'; }
@@ -276,9 +276,9 @@ function shake(el){ el.style.borderColor='#ffb4b4'; el.animate([{transform:'tran
 function esc(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
 function escAttr(s){return String(s??'').replace(/"/g,'&quot;')}
 function toPrice(v, currency){
-if (typeof v === "number") return v.toFixed(2)+" "+currency;
-if (typeof v === "string" && v.trim()) return v.includes("₪") ? v : (v+" "+currency);
-return "—";
+  if (typeof v === "number") return v.toFixed(2)+" "+currency;
+  if (typeof v === "string" && v.trim()) return v.includes("₪") ? v : (v+" "+currency);
+  return "—";
 }
 </script>
 </body>

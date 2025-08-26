@@ -1,14 +1,14 @@
 // server_deno.ts
-// Hono via npm + Anthropic Claude + Google CSE
+// Hono (Deno) + OpenAI Responses API (built-in web_search tool)
+// Flow: client -> /api/search -> OpenAI (web_search) -> STRICT JSON result
 //
-// Flow: client -> /api/search -> Google CSE (snippets) -> Claude messages -> strict JSON
+// ENV (Deno Deploy / local):
+// OPENAI_API_KEY=sk-...
+// OPENAI_MODEL=o4-mini            (או gpt-4o-mini / gpt-4o)
+// DEBUG=true                      (לא חובה; מפעיל /api/llm_preview ועוד)
 //
-// ENV (Deno Deploy → Settings → Environment Variables):
-// ANTHROPIC_API_KEY=sk-ant-...
-// ANTHROPIC_MODEL=claude-sonnet-4-20250514
-// GOOGLE_CSE_KEY=AIza...
-// GOOGLE_CSE_CX=xxxxxxxxxxxxxxxxx
-// DEBUG=true (optional)
+// Run locally:
+// DEBUG=true OPENAI_API_KEY=sk-... deno run --allow-net --allow-env --allow-read server_deno.ts
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -17,16 +17,16 @@ import { serveStatic } from "npm:hono/serve-static";
 const app = new Hono();
 
 // ===== ENV =====
-const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
-const ANTHROPIC_MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-20250514";
-const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
-const GOOGLE_CSE_CX = Deno.env.get("GOOGLE_CSE_CX") ?? "";
+const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "o4-mini"; // או "gpt-4o-mini"
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
+
+class HttpError extends Error { status:number; constructor(s:number,m:string){ super(m); this.status=s; } }
 
 function extractJson(text:string){
   if (!text) return null;
@@ -37,201 +37,253 @@ function extractJson(text:string){
   return null;
 }
 
-function hostnameOf(u: string): string {
-  try { return new URL(u).hostname || ""; } catch { return ""; }
+function decodeHtmlEntities(s: string): string {
+  if (!s) return "";
+  return s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+function stripBidiControls(s: string): string {
+  if (!s) return "";
+  const BIDI = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+  return s.replace(BIDI, "");
+}
+function normalizeSpaces(s: string): string { return s.replace(/\s+/g, " ").trim(); }
+function cleanText(s: string, maxLen = 280): string {
+  const out = normalizeSpaces(stripBidiControls(decodeHtmlEntities(s)));
+  return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
 }
 
-class HttpError extends Error {
-  status: number;
-  constructor(status:number, message:string){ super(message); this.status = status; }
-}
-
-// ===== Prompt =====
+// ===== System Prompt (קשוח) =====
+// גרסה מותאמת ל-web_search המובנה (אין עוד web_snippets מבחוץ)
 const PROMPT_CLAUDE = `
-You are a price-comparison agent.
+You are a price-comparison agent for Israeli groceries.
 
-INPUTS YOU GET:
+INPUTS PROVIDED:
 - address (city/street/country)
 - radius_km (numeric)
 - list_text (free-form shopping list)
-- web_snippets: a list of search results (title, snippet, url) gathered just now.
+
+TOOLS AVAILABLE:
+- web_search: use it to find current, real prices from real Israeli stores (supermarkets, e-commerce, comparison sites). Prefer product/store pages over blogs/news.
 
 TASK:
-1) Parse the shopping list into concrete items.
-2) Use ONLY the web_snippets *as live sources* to find realistic prices.
-3) Return 3–4 stores near the given address within the radius.
-4) Sort stores cheapest→expensive by total_price.
+1) Parse list_text into concrete items (name, quantity, brand if known, size when obvious).
+2) Use web_search to find realistic prices for those items (₪). Include product_url & source_domain for each line if available.
+3) Return 3–4 stores near the given address within the radius. If distance is unknown, estimate (in km).
+4) Sort stores by total_price ascending (cheapest → expensive).
+5) If a price is not explicitly found, estimate reasonably, set lower match_confidence (e.g., 0.4), and add "notes".
 
-STRICT JSON OUTPUT ONLY (no extra text).
+STRICT JSON OUTPUT ONLY (no extra text):
+{
+  "status": "ok",
+  "results": [
+    {
+      "rank": 1,
+      "store_name": "string",
+      "address": "string",
+      "distance_km": 2.1,
+      "currency": "₪",
+      "total_price": 123.45,
+      "notes": "optional string",
+      "basket": [
+        {
+          "name": "string",
+          "brand": "string (or empty)",
+          "quantity": 1,
+          "unit_price": 12.34,
+          "line_total": 12.34,
+          "product_url": "https://...",
+          "source_domain": "example.co.il",
+          "match_confidence": 0.0,
+          "substitution": false,
+          "notes": "optional"
+        }
+      ],
+      "match_overall": 0.0
+    }
+  ]
+}
+
+HARD RULES:
+- Currency symbol must be "₪" for Israel.
+- No zeros unless page explicitly shows 0.
+- Absolutely NO TEXT OUTSIDE JSON.
 `.trim();
 
-// ===== Google CSE =====
-async function googleCse(id:string, q:string, num=8){
-  if(!GOOGLE_CSE_KEY || !GOOGLE_CSE_CX) throw new HttpError(500, "Missing GOOGLE_CSE_KEY/GOOGLE_CSE_CX");
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", GOOGLE_CSE_KEY);
-  url.searchParams.set("cx", GOOGLE_CSE_CX);
-  url.searchParams.set("q", q);
-  url.searchParams.set("num", String(num));
-  url.searchParams.set("hl", "he");
+// ===== OpenAI Responses API (web_search tool) =====
+// Docs: tools include "web_search" in Responses API. The "instructions" param acts like a system prompt. :contentReference[oaicite:1]{index=1}
+async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
+  if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  const res = await fetch(url.toString());
-  const data = await res.json().catch(()=> ({}));
-  if (!res.ok) throw new HttpError(res.status, `CSE ${res.status}: ${JSON.stringify(data)}`);
+  const body = {
+    model: OPENAI_MODEL,
+    instructions: systemPrompt,                   // system behavior
+    input: userPrompt,                            // user content
+    tools: [{ type: "web_search" }],              // let model browse the web
+    tool_choice: "auto",                          // allow the model to decide
+    max_output_tokens: 1800
+  };
 
-  return (data.items||[]).map((it:any)=>({
-    title: String(it.title||""),
-    snippet: String(it.snippet||""),
-    url: String(it.link||"")
-  }));
-}
-
-function dedupByUrl(items:{title:string;snippet:string;url:string}[]){
-  const seen = new Set<string>();
-  return items.filter(it => {
-    const u = it.url.trim();
-    if (!u || seen.has(u)) return false;
-    seen.add(u);
-    return true;
-  });
-}
-
-// ===== Claude =====
-async function callClaude(id:string, systemPrompt:string, userPayload:string){
-  if(!ANTHROPIC_KEY) throw new HttpError(500, "Missing ANTHROPIC_API_KEY");
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST",
-    headers:{
-      "content-type":"application/json",
-      "x-api-key": ANTHROPIC_KEY,
-      "anthropic-version":"2023-06-01"
+  const resp = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${OPENAI_KEY}`,
+      "content-type": "application/json"
     },
-    body: JSON.stringify({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 2000,
-      system: systemPrompt,
-      messages: [ { role:"user", content: userPayload } ]
-    })
-  });
-  const j = await resp.json().catch(()=> ({}));
-  if (!resp.ok) throw new HttpError(resp.status, `Claude ${resp.status}: ${JSON.stringify(j)}`);
+    body: JSON.stringify(body)
+  }).catch((e)=> { throw new HttpError(502, `OpenAI fetch error: ${e?.message || String(e)}`); });
 
-  const text = Array.isArray(j.content) ? (j.content.find((p:any)=>p.type==="text")?.text ?? "") : "";
-  if (!text) throw new HttpError(502, "Claude empty content");
-  const parsed = extractJson(text);
-  return parsed || { status:"ok", results:[], raw:text };
+  const json = await resp.json().catch(()=> ({}));
+  if (!resp.ok) {
+    err(id, "OpenAI bad status", json);
+    throw new HttpError(resp.status, `OpenAI ${resp.status}: ${JSON.stringify(json)}`);
+  }
+
+  // Responses API returns output_text for convenience; fallbacks for safety
+  const text =
+    (typeof json.output_text === "string" && json.output_text) ||
+    (Array.isArray(json.output) ? json.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
+    "";
+
+  const parsed = extractJson(String(text));
+  if (parsed) return { parsed, raw: json, output_text: text };
+
+  // אם המודל לא החזיר JSON תקין—נחזיר raw לדיבוג
+  return { parsed: null, raw: json, output_text: text };
 }
 
 // ===== API =====
-app.use("/api/*", cors());
+app.use("/api/*", cors({
+  origin: "*",
+  allowMethods: ["GET","POST","OPTIONS"],
+  allowHeaders: ["Content-Type","Authorization"]
+}));
 
 app.get("/api/health", (c)=>{
-  return c.json({
-    ok:true,
-    model: ANTHROPIC_MODEL,
-    has_anthropic_key: !!ANTHROPIC_KEY,
-    has_google_cse_key: !!GOOGLE_CSE_KEY,
-    has_google_cse_cx: !!GOOGLE_CSE_CX,
-    requestId: rid()
-  });
-});
-
-// ---- Debug: raw Google CSE ----
-app.get("/api/cse", async (c) => {
-  if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/cse" }, 403);
   const id = rid();
-  const q = c.req.query("q") || "";
-  const num = Number(c.req.query("num") || "8");
-  if (!q) return c.json({ status:"need_input", needed:["q"], requestId:id }, 400);
-
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", GOOGLE_CSE_KEY);
-  url.searchParams.set("cx", GOOGLE_CSE_CX);
-  url.searchParams.set("q", q);
-  url.searchParams.set("num", String(num));
-  url.searchParams.set("hl", "he");
-
-  const res = await fetch(url.toString());
-  const data = await res.json().catch(()=> ({}));
-  if (!res.ok) return c.json({ status:"error", http_status:res.status, google:data, requestId:id }, res.status);
-
-  const items = (data.items||[]).map((it:any)=>({ title:it.title, snippet:it.snippet, url:it.link }));
-  return c.json({ status:"ok", q, num, items, google:data, requestId:id });
+  const payload = {
+    ok: true,
+    model: OPENAI_MODEL,
+    has_openai_key: !!OPENAI_KEY,
+    debug_enabled: DEBUG,
+    requestId: id
+  };
+  info(id, "GET /api/health", payload);
+  return c.json(payload);
 });
 
-// ---- Debug: preview payload to LLM ----
-app.get("/api/llm_preview", async (c) => {
+// תצוגה מה נשלח בפועל ל-LLM (בלי חיפוש חיצוני) — דיבוג
+app.get("/api/llm_preview", async (c)=>{
   if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
   const id = rid();
-  const address = c.req.query("address") || "";
+  const address = cleanText(c.req.query("address") || "");
   const radius_km = Number(c.req.query("radius_km") || "5");
-  const list_text = c.req.query("list_text") || "";
-  if (!address || !list_text) return c.json({ status:"need_input", needed:["address","list_text"], requestId:id }, 400);
+  const list_text = cleanText(c.req.query("list_text") || "");
+  if (!address || !list_text){
+    return c.json({ status:"need_input", needed:["address","list_text"], requestId:id }, 400);
+  }
 
-  const [r1, r2] = await Promise.all([
-    googleCse(id, `site:co.il ${list_text} מחיר קנייה ${address}`, 8),
-    googleCse(id, `${list_text} מחירים ${address}`, 8)
-  ]);
-  const snippets = dedupByUrl([...r1, ...r2]);
-  const domains = snippets.reduce((acc:Record<string,number>, s)=>{ const h=hostnameOf(s.url); if(h) acc[h]=(acc[h]||0)+1; return acc; },{});
-  const payload =
+  const userPrompt =
 `address: ${address}
 radius_km: ${radius_km}
 list_text: ${list_text}
 
-web_snippets:
-${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}`).join("\n")}
-`;
+NOTE: Use web_search to find current prices in ₪ on Israeli stores and return STRICT JSON only (see schema in system instructions).`;
 
-  return c.json({ status:"ok", debug:{ snippets, domains, llm_payload: payload }, requestId:id });
+  return c.json({
+    status:"ok",
+    debug:{
+      instructions: PROMPT_CLAUDE,
+      user_input: userPrompt
+    },
+    requestId: id
+  });
 });
 
-// ---- Main search ----
+// החיפוש הראשי — OpenAI web_search בלבד
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
     const body = await c.req.json().catch(()=> ({}));
-    const address = String(body?.address ?? "").trim();
-    const radius_km = Number(body?.radius_km ?? 0);
-    const list_text = String(body?.list_text ?? "").trim();
-    if(!address || !radius_km || !list_text)
-      return c.json({ status:"need_input", needed:["address","radius_km","list_text"], requestId:id }, 400);
+    info(id, "POST /api/search body", body);
 
-    const [r1, r2] = await Promise.all([
-      googleCse(id, `site:co.il ${list_text} מחיר קנייה ${address}`, 8),
-      googleCse(id, `${list_text} מחירים ${address}`, 8)
-    ]);
-    const snippets = dedupByUrl([...r1, ...r2]);
-    const domains = snippets.reduce((acc:Record<string,number>, s)=>{ const h=hostnameOf(s.url); if(h) acc[h]=(acc[h]||0)+1; return acc; },{});
-    const userPayload =
+    const address   = cleanText(String(body?.address ?? "").trim());
+    const radius_km = Number(body?.radius_km ?? 0);
+    const list_text = cleanText(String(body?.list_text ?? "").trim());
+
+    const miss:string[]=[];
+    if(!address)   miss.push("address");
+    if(!radius_km) miss.push("radius_km");
+    if(!list_text) miss.push("list_text");
+    if (miss.length){
+      return c.json({ status:"need_input", needed: miss, requestId:id }, 400);
+    }
+
+    const userPrompt =
 `address: ${address}
 radius_km: ${radius_km}
 list_text: ${list_text}
 
-web_snippets:
-${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}`).join("\n")}
-`;
+INSTRUCTIONS:
+- Use web_search to collect real prices (₪) from Israeli retailers near the address.
+- Prefer product/store pages; include product_url and source_domain for each basket line when available.
+- If price not explicit, estimate (lower confidence) and add notes.
+- Return STRICT JSON only (see schema in system instructions).`;
 
-    const out = await callClaude(id, PROMPT_CLAUDE, userPayload);
-    if (!out || out.status!=="ok" || !Array.isArray(out.results))
-      return c.json({ status:"no_results", results:[], debug:{ snippets, domains }, requestId:id }, 502);
+    const { parsed, raw, output_text } = await callOpenAIResponses(PROMPT_CLAUDE, userPrompt, id);
 
-    const debug = (DEBUG||body?.include_snippets) ? { snippets, domains, llm_payload: userPayload } : undefined;
-    return c.json({ ...out, requestId:id, ...(debug?{debug}: {}) });
+    if (!parsed || parsed.status !== "ok" || !Array.isArray(parsed.results)) {
+      // לא קיבלנו JSON תקין—נחזיר דיבוג כדי להבין מה קרה
+      return c.json({
+        status: "no_results",
+        message: "Model did not return expected JSON shape",
+        results: [],
+        debug: DEBUG ? { output_text, openai_raw: raw } : undefined,
+        requestId: id
+      }, 502);
+    }
+
+    // הצלחה
+    const payload:any = { ...parsed, requestId:id };
+    if (DEBUG || body?.include_debug) payload.debug = { openai_raw: raw };
+    return c.json(payload, 200);
+
   }catch(e:any){
-    return c.json({ status:"error", message:e?.message||String(e), requestId:id }, e?.status||500);
+    const status = typeof e?.status === "number" ? e.status : 500;
+    const message = e?.message || String(e);
+    err(id, "search handler failed", { status, message });
+    return c.json({ status:"error", message, requestId:id }, status);
   }
 });
 
-// ===== Static UI =====
+// ===== Static UI (אופציונלי) =====
 app.use("/public/*", serveStatic({ root:"./" }));
 app.use("/assets/*", serveStatic({ root:"./" }));
 
+async function tryIndex(): Promise<string|null> {
+  try { return await Deno.readTextFile("./public/index.html"); }
+  catch { return null; }
+}
+
 app.get("/", async (c)=>{
-  try{ const html = await Deno.readTextFile("./public/index.html"); return c.newResponse(html,200,{"content-type":"text/html"});}
-  catch{ return c.newResponse("<p>Upload public/index.html</p>",200); }
+  const id = rid();
+  const html = await tryIndex();
+  if (html){
+    info(id, "Serving ./public/index.html");
+    return c.newResponse(html, 200, { "content-type":"text/html; charset=utf-8" });
+  }
+  return c.newResponse(`<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>UI placeholder — add <code>public/index.html</code>.</p>`, 200);
 });
 
-app.notFound((c)=> c.text("Not found",404));
+app.notFound(async (c)=>{
+  const html = await tryIndex();
+  return c.newResponse(html ?? "<p>Not found</p>", 404, { "content-type":"text/html; charset=utf-8" });
+});
 
 Deno.serve(app.fetch);
