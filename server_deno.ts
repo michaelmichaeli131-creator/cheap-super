@@ -22,7 +22,6 @@ const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
 const GOOGLE_CSE_CX = Deno.env.get("GOOGLE_CSE_CX") ?? "";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
-// (רשימת מודלים מומלצת — אזהרה לוגית בלבד)
 const RECOMMENDED_MODELS = new Set<string>([
   "claude-sonnet-4-20250514",
   "claude-3-7-sonnet-20250219",
@@ -36,13 +35,11 @@ function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERR
 
 function extractJson(text:string){
   if (!text) return null;
-  // fenced ```json ... ```
   const fence = text.match(/```json\s*([\s\S]*?)```/i);
   if (fence?.[1]) {
     const s = fence[1].trim();
     try { return JSON.parse(s); } catch {}
   }
-  // first {...} block
   const a = text.indexOf("{"), b = text.lastIndexOf("}");
   if (a>=0 && b>a) {
     const s = text.slice(a, b+1);
@@ -51,11 +48,66 @@ function extractJson(text:string){
   return null;
 }
 
-// ===== Errors =====
 class HttpError extends Error {
   status: number;
   constructor(status:number, message:string){ super(message); this.status = status; }
 }
+
+// ===== Prompt =====
+const PROMPT_CLAUDE = `
+You are a price-comparison agent.
+
+INPUTS YOU GET:
+- address (city/street/country)
+- radius_km (numeric)
+- list_text (free-form shopping list)
+- web_snippets: a list of search results (title, snippet, url) gathered just now.
+
+TASK:
+1) Parse the shopping list into concrete items (name, quantity, brand if known, size when obvious).
+2) Use ONLY the web_snippets *as live sources* to find realistic prices from real stores (supermarkets, e-commerce, price-comparison sites).
+3) Return 3–4 stores near the given address within the radius. If exact distance is unknown from snippets, estimate.
+4) Sort stores cheapest→expensive by total_price.
+
+STRICT JSON OUTPUT ONLY (no extra text):
+{
+"status": "ok",
+"results": [
+{
+"rank": 1,
+"store_name": "string",
+"address": "string",
+"distance_km": 2.1,
+"currency": "₪",
+"total_price": 123.45,
+"notes": "optional string",
+"basket": [
+{
+"name": "string",
+"brand": "string (or empty)",
+"quantity": 1,
+"unit_price": 12.34,
+"line_total": 12.34,
+"product_url": "https://...",
+"source_domain": "example.co.il",
+"match_confidence": 0.0–1.0,
+"substitution": false,
+"notes": "optional"
+}
+],
+"match_overall": 0.0–1.0
+}
+]
+}
+
+HARD RULES:
+- Use the snippets for evidence. Prefer product/store pages over articles/blogs.
+- Always include product_url & source_domain for each basket item if available.
+- If price not explicitly found, estimate reasonably BUT mark lower confidence (e.g. 0.4) and add "notes".
+- No zeros unless the page says 0.
+- Currency "₪" for Israel; otherwise use local currency symbol.
+- ABSOLUTELY NO TEXT OUTSIDE JSON.
+`.trim();
 
 // ===== Google CSE =====
 async function googleCse(id:string, q:string, num=8){
@@ -97,11 +149,9 @@ function dedupByUrl(items:{title:string;snippet:string;url:string}[]){
 // ===== Claude =====
 async function callClaude(id:string, systemPrompt:string, userPayload:string){
   if(!ANTHROPIC_KEY) throw new HttpError(500, "Missing ANTHROPIC_API_KEY");
-
   if (!RECOMMENDED_MODELS.has(ANTHROPIC_MODEL)) {
     info(id, `Model "${ANTHROPIC_MODEL}" not in recommended list (continuing).`);
   }
-
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST",
     headers:{
@@ -113,13 +163,10 @@ async function callClaude(id:string, systemPrompt:string, userPayload:string){
       model: ANTHROPIC_MODEL,
       max_tokens: 2000,
       system: systemPrompt,
-      messages: [
-        { role:"user", content: userPayload }
-      ]
+      messages: [ { role:"user", content: userPayload } ]
     })
   }).catch((e)=>{ throw new HttpError(502, `Claude fetch error: ${e?.message || String(e)}`); });
 
-  // נסה לפרסר גוף גם בשגיאה
   const j = await resp.json().catch(()=> ({}));
   if (!resp.ok){
     const et = j?.error?.type;
@@ -127,7 +174,7 @@ async function callClaude(id:string, systemPrompt:string, userPayload:string){
     if (et === "not_found_error" || /model/i.test(em)) {
       throw new HttpError(
         400,
-        `Model "${ANTHROPIC_MODEL}" לא נתמך או אינו זמין בחשבונך.\n` +
+        `Model "${ANTHROPIC_MODEL}" לא נתמך או אינו זמין.\n` +
         `עדכן ENV:\nANTHROPIC_MODEL=claude-sonnet-4-20250514\nאו: claude-3-7-sonnet-20250219`
       );
     }
@@ -142,8 +189,6 @@ async function callClaude(id:string, systemPrompt:string, userPayload:string){
 
   const parsed = extractJson(text);
   if (parsed) return parsed;
-
-  // Passthrough if not JSON
   return { status:"ok", results:[], raw:text };
 }
 
@@ -169,7 +214,6 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
-// ---- /api/search (עם debug.snippets לפי דגל) ----
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
@@ -188,22 +232,16 @@ app.post("/api/search", async (c)=>{
       return c.json({ status:"need_input", needed: miss, requestId:id }, 400);
     }
 
-    // דגל דיבוג: להחזיר snippets חזרה ללקוח
     const wantSnippets =
       DEBUG ||
       c.req.query("debug") === "1" ||
       (typeof body?.include_snippets === "boolean" && body.include_snippets === true);
 
-    // Build 2 complementary queries (בלי להסתמך על פסיקים)
     const q1 = `site:co.il ${list_text} מחיר קנייה ${address}`;
     const q2 = `${list_text} מחירים ${address}`;
 
     const [r1,r2] = await Promise.all([googleCse(id,q1,8), googleCse(id,q2,8)]);
     const snippets = dedupByUrl([...r1, ...r2]);
-
-    if (DEBUG) {
-      info(id, "CSE debug", { q1, q2, dedupCount: snippets.length });
-    }
 
     const userPayload =
 `address: ${address}
@@ -216,7 +254,6 @@ ${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}
 
     const out = await callClaude(id, PROMPT_CLAUDE, userPayload);
 
-    // sanity: enforce structure
     if (!out || out.status!=="ok" || !Array.isArray(out.results)) {
       info(id, "Unexpected Claude shape", out);
       return c.json({
@@ -228,7 +265,6 @@ ${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}
       }, 502);
     }
 
-    // success
     const payload = wantSnippets ? { ...out, debug: { snippets }, requestId:id } : { ...out, requestId:id };
     return c.json(payload, 200);
 
@@ -240,7 +276,7 @@ ${snippets.map(s=>`- title: ${s.title}\n  snippet: ${s.snippet}\n  url: ${s.url}
   }
 });
 
-// ===== Static UI from ./public =====
+// ===== Static UI =====
 app.use("/public/*", serveStatic({ root:"./" }));
 app.use("/assets/*", serveStatic({ root:"./" }));
 
