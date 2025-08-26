@@ -1,12 +1,12 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs via text.format
+// Deno + Hono + OpenAI Responses API (web_search) — Structured Outputs + FULL error debug
 //
 // ENV:
 // OPENAI_API_KEY=sk-...
-// OPENAI_MODEL=gpt-5.1           // או o4-mini / gpt-4o-mini / gpt-5.1-mini
-// DEBUG=false                    // בפרודקשן עדיף false; true לדיבוג מקומי
+// OPENAI_MODEL=gpt-5.1        // או gpt-4o-mini / gpt-5.1-mini
+// DEBUG=false                  // true מקומית למצב דיבוג
 //
-// Run locally:
+// Run:
 // DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-5.1 deno run --allow-net --allow-env --allow-read server_deno.ts
 
 import { Hono } from "npm:hono";
@@ -21,11 +21,11 @@ const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
-const SAFE_DEBUG_MAX = 800; // אל תזרקו מגילות ללקוח
+const SAFE_DEBUG_MAX = 1500;
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
-class HttpError extends Error { status:number; constructor(s:number,m:string){ super(m); this.status=s; } }
+class HttpError extends Error { status:number; payload?:unknown; constructor(s:number,m:string,p?:unknown){ super(m); this.status=s; this.payload=p; } }
 
 function extractJson(text:string){
   if (!text) return null;
@@ -67,7 +67,7 @@ INPUTS PROVIDED:
 - list_text (free-form shopping list)
 
 TOOLS AVAILABLE:
-- web_search: use it to find current, real prices from real Israeli stores.
+- web_search: use it to find current, real prices from real Israeli stores (retailer/product pages).
   Prefer product/store pages over blogs/news.
 
 TASK:
@@ -112,62 +112,56 @@ HARD RULES:
 - Currency symbol must be "₪" for Israel.
 - No zeros unless page explicitly shows 0.
 - Absolutely NO TEXT OUTSIDE JSON.
-- Ignore code repositories / developer docs / blogs (GitHub/Gist/NPM/etc.).
-- Focus ONLY on Israeli retail product/store pages with explicit prices (rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il, etc.).
-- If a page is mostly code or technical text, do not use it as a source.
+- Focus ONLY on Israeli retail product/store pages with explicit prices (e.g., rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il).
 `.trim();
 
-// ===== OpenAI Responses API call (Structured Outputs) =====
+// ===== OpenAI Responses API call (Structured Outputs + full error capture) =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // JSON Schema שנאכף ע"י Structured Outputs
+  // JSON Schema לאכיפה ע״י Structured Outputs (text.format)
   const schema = {
-    name: "cart_compare_results",
-    strict: true,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "results"],
-      properties: {
-        status: { type: "string", enum: ["ok"] },
-        results: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["rank","store_name","address","distance_km","currency","total_price","basket","match_overall"],
-            properties: {
-              rank: { type: "integer" },
-              store_name: { type: "string" },
-              address: { type: "string" },
-              distance_km: { type: "number" },
-              currency: { type: "string" },
-              total_price: { type: "number" },
-              notes: { type: "string" },
-              basket: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["name","brand","quantity","unit_price","line_total","product_url","source_domain","match_confidence","substitution"],
-                  properties: {
-                    name: { type: "string" },
-                    brand: { type: "string" },
-                    quantity: { type: "number" },
-                    unit_price: { type: "number" },
-                    line_total: { type: "number" },
-                    product_url: { type: "string" },
-                    source_domain: { type: "string" },
-                    match_confidence: { type: "number" },
-                    substitution: { type: "boolean" },
-                    notes: { type: "string" }
-                  }
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "results"],
+    properties: {
+      status: { type: "string", enum: ["ok"] },
+      results: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["rank","store_name","address","distance_km","currency","total_price","basket","match_overall"],
+          properties: {
+            rank: { type: "integer" },
+            store_name: { type: "string" },
+            address: { type: "string" },
+            distance_km: { type: "number" },
+            currency: { type: "string" },
+            total_price: { type: "number" },
+            notes: { type: "string" },
+            basket: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["name","brand","quantity","unit_price","line_total","product_url","source_domain","match_confidence","substitution"],
+                properties: {
+                  name: { type: "string" },
+                  brand: { type: "string" },
+                  quantity: { type: "number" },
+                  unit_price: { type: "number" },
+                  line_total: { type: "number" },
+                  product_url: { type: "string" },
+                  source_domain: { type: "string" },
+                  match_confidence: { type: "number" },
+                  substitution: { type: "boolean" },
+                  notes: { type: "string" }
                 }
-              },
-              match_overall: { type: "number" }
-            }
+              }
+            },
+            match_overall: { type: "number" }
           }
         }
       }
@@ -176,19 +170,21 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
 
   const body = {
     model: OPENAI_MODEL,
-    instructions: systemPrompt,   // system
-    input: userPrompt,            // user
-    tools: [{ type: "web_search" }],
+    instructions: systemPrompt,
+    input: userPrompt,
+    tools: [{ type: "web_search" }],          // כלי חיפוש רשת מובנה
     tool_choice: "auto",
-    max_output_tokens: 1800,
     temperature: 0.2,
+    max_output_tokens: 1800,
 
-    // ⚠️ הצורה התקינה: text.format הוא אובייקט, כולל name, ובתוכו json_schema
+    // ⚠️ הצורה התקינה לפי Responses API: text.format = { type: "json_schema", name, schema }
+    // (Structured Outputs) — ראה תיעוד
+    // https://platform.openai.com/docs/guides/structured-outputs
     text: {
       format: {
         type: "json_schema",
-        name: "cart_compare_results",   // ← חובה! בלעדיו תקבל  Missing required parameter: 'text.format.name'
-        json_schema: schema
+        name: "cart_compare_results",
+        schema: schema
       }
     }
   };
@@ -200,27 +196,49 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
       "content-type": "application/json"
     },
     body: JSON.stringify(body)
-  }).catch((e)=> { throw new HttpError(502, `OpenAI fetch error: ${e?.message || String(e)}`); });
+  }).catch((e)=> {
+    throw new HttpError(502, `OpenAI fetch error: ${e?.message || String(e)}`);
+  });
 
-  const json = await resp.json().catch(()=> ({}));
+  const requestIdHeader = resp.headers.get("x-request-id") || resp.headers.get("openai-request-id") || null;
+
+  // קרא גוף כ־JSON; אם נכשל (לא JSON), קרא טקסט גולמי
+  let jsonOrText: any = null;
+  try {
+    jsonOrText = await resp.json();
+  } catch {
+    try { jsonOrText = await resp.text(); } catch { jsonOrText = null; }
+  }
+
   if (!resp.ok) {
-    err(id, "OpenAI bad status", json);
-    throw new HttpError(resp.status, `OpenAI ${resp.status}: ${JSON.stringify(json)}`);
+    // החזר ללקוח פירוט מלא — כולל status, גוף השגיאה, ומזהה בקשה
+    throw new HttpError(resp.status, `OpenAI ${resp.status}`, {
+      error: (jsonOrText?.error ?? jsonOrText ?? null),
+      full_response: jsonOrText ?? null,
+      x_request_id: requestIdHeader
+    });
   }
 
-  // עם Structured Outputs נקבל output_parsed
-  const parsed = (json.output_parsed ?? null);
+  // עם Structured Outputs נקבל output_parsed (ראה רפרנס)
+  // https://platform.openai.com/docs/api-reference/responses
+  const parsed = (jsonOrText?.output_parsed ?? null);
   if (parsed && parsed.status === "ok" && Array.isArray(parsed.results)) {
-    return { parsed, raw: json, output_text: undefined };
+    return { parsed, raw: jsonOrText, request_id: requestIdHeader };
   }
 
-  // fallback: נסה לפענח טקסט אם משום מה אין output_parsed
-  const textOut =
-    (typeof (json as any).output_text === "string" && (json as any).output_text) ||
-    (Array.isArray((json as any).output) ? (json as any).output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
+  // fallback: נסה לחלץ JSON מטקסט (במידה והמודל "פלט" טקסט חופשי)
+  const outputText =
+    (typeof jsonOrText?.output_text === "string" && jsonOrText.output_text) ||
+    (Array.isArray(jsonOrText?.output) ? jsonOrText.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
     "";
-  const tryParsed = extractJson(String(textOut));
-  return { parsed: tryParsed, raw: json, output_text: textOut };
+  const tryParsed = extractJson(outputText);
+  if (!tryParsed) {
+    throw new HttpError(400, "Model did not return expected JSON shape (no output_parsed)", {
+      output_text_excerpt: outputText ? outputText.slice(0, SAFE_DEBUG_MAX) : "",
+      x_request_id: requestIdHeader
+    });
+  }
+  return { parsed: tryParsed, raw: jsonOrText, request_id: requestIdHeader };
 }
 
 // ===== API =====
@@ -243,7 +261,7 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
-// דיבוג פרומפט (לא מריץ מודל)
+// נקודת בדיקה שמדפיסה מה בדיוק ישלח למודל — בלי להריץ בפועל (DEBUG בלבד)
 app.get("/api/llm_preview", async (c)=>{
   if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
   const id = rid();
@@ -260,10 +278,10 @@ radius_km: ${radius_km}
 list_text: ${list_text}
 
 SEARCH SCOPE:
-- Use web_search only on Israeli retailer domains (rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il).
-- Ignore GitHub/Gist/NPM/docs/blogs.
+- Only Israeli retailer domains/product pages with explicit prices.
+- Prefer product/store pages; ignore blogs/docs/dev sites.
 
-NOTE: Return STRICT JSON only (see schema in system instructions).`;
+Return STRICT JSON (see system schema).`;
 
   return c.json({
     status:"ok",
@@ -272,7 +290,7 @@ NOTE: Return STRICT JSON only (see schema in system instructions).`;
   });
 });
 
-// חיפוש ראשי
+// חיפוש ראשי: קורא ל-Responses API עם web_search + Structured Outputs
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
@@ -298,36 +316,26 @@ list_text: ${list_text}
 
 INSTRUCTIONS:
 - Use web_search to collect real prices (₪) from Israeli retailers near the address.
-- Prefer product/store pages; include product_url and source_domain for each basket line when available.
-- If price not explicit, estimate (lower confidence) and add notes.
-- Return STRICT JSON only (see schema in system instructions).
+- Include product_url and source_domain for each line when available.
+- If a price is missing, estimate with lower confidence and add notes.
+- Return STRICT JSON only (see schema in system).`;
 
-SEARCH SCOPE:
-- Allowed retailer domains (not exhaustive): rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il.
-- Ignore code repositories, developer docs/blogs and technical pages.`;
-
-    const { parsed, raw, output_text } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
-
-    if (!parsed || parsed.status !== "ok" || !Array.isArray(parsed.results)) {
-      const safeText = typeof output_text === "string" ? output_text.slice(0, SAFE_DEBUG_MAX) : undefined;
-      return c.json({
-        status: "no_results",
-        message: "Model did not return expected JSON shape",
-        results: [],
-        debug: DEBUG ? { output_text: safeText, has_more: (safeText && output_text && (output_text.length>SAFE_DEBUG_MAX)) || false, openai_raw_excerpt: (raw ? JSON.stringify(raw).slice(0, SAFE_DEBUG_MAX) : undefined) } : undefined,
-        requestId: id
-      }, 400);
-    }
-
-    const payload:any = { ...parsed, requestId:id };
+    const { parsed, raw, request_id } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
+    const payload:any = { ...parsed, requestId:id, openai_request_id: request_id ?? undefined };
     if (DEBUG || body?.include_debug) payload.debug = { openai_raw_excerpt: JSON.stringify(raw).slice(0, SAFE_DEBUG_MAX) };
     return c.json(payload, 200);
 
   }catch(e:any){
     const status = typeof e?.status === "number" ? e.status : 500;
     const message = e?.message || String(e);
-    err(id, "search handler failed", { status, message });
-    return c.json({ status:"error", message, requestId:id }, status);
+    const payload:any = {
+      status:"error",
+      message,
+      requestId:id
+    };
+    if (e?.payload) payload.details = e.payload;   // פה יופיעו error/full_response/x_request_id
+    err(id, "search handler failed", { status, message, details: e?.payload });
+    return c.json(payload, status);
   }
 });
 
