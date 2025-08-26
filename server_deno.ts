@@ -91,7 +91,7 @@ HARD RULES:
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // Define the function tool schema (JSON Schema)
+  // Function tool schema
   const submitResultsFunction = {
     type: "function",
     name: "submit_results",
@@ -156,13 +156,10 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     input: userPrompt,
     tools: [
       { type: "web_search" },                        // built-in web search
-      submitResultsFunction                           // our function tool for structured output
+      submitResultsFunction                           // function tool for structured output
     ],
-    // ✅ Correct way to force a specific function with Responses API:
-    //    tool_choice must be { type: "function", name: "<func_name>" }
-    //    (no nested "function" object)
+    // Correct Responses API form to force a function:
     tool_choice: { type: "function", name: "submit_results" },
-    // no temperature (some models don’t support it)
     max_output_tokens: 1800
   };
 
@@ -194,28 +191,38 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     });
   }
 
-  // Parse the tool call result (Responses API returns tool calls in output list)
-  const outputs = Array.isArray(json?.output) ? json.output : [];
-  // look for standard shape
-  let argsStr: string | null =
-    outputs.find((p:any)=> p?.type === "tool_call" && (p?.tool === "submit_results" || p?.function?.name === "submit_results"))
-      ?.function?.arguments ?? null;
+  if (DEBUG) {
+    info(id, "OpenAI outputs (types)", Array.isArray(json?.output) ? json.output.map((p:any)=>p?.type) : json?.output);
+  }
 
-  // fallback: scan all tool_call entries and take the last submit_results
-  if (!argsStr) {
-    for (const p of outputs) {
-      if (p?.type === "tool_call" && p?.function?.name === "submit_results" && typeof p?.function?.arguments === "string") {
-        argsStr = p.function.arguments;
-      }
-    }
+  // Parse function/tool call:
+  const outputs = Array.isArray(json?.output) ? json.output : [];
+
+  // 1) Prefer explicit submit_results calls (function_call OR tool_call)
+  let candidate = outputs.find((p:any)=>
+    (p?.type === "function_call" && (p?.name === "submit_results" || p?.function?.name === "submit_results")) ||
+    (p?.type === "tool_call"     && (p?.tool === "submit_results" || p?.function?.name === "submit_results"))
+  );
+
+  // 2) If not found, but there's exactly one function/tool call — assume it's ours
+  if (!candidate) {
+    const calls = outputs.filter((p:any)=> p?.type === "function_call" || p?.type === "tool_call");
+    if (calls.length === 1) candidate = calls[0];
+  }
+
+  // 3) Extract arguments from any known shape
+  let argsStr: string | null = null;
+  if (candidate) {
+    if (typeof candidate?.arguments === "string") argsStr = candidate.arguments;
+    if (!argsStr && typeof candidate?.function?.arguments === "string") argsStr = candidate.function.arguments;
   }
 
   if (!argsStr) {
-    // last resort: try to extract from output_text (rare)
+    // Last resort: try free text JSON (rare)
     const outputText = typeof json?.output_text === "string" ? json.output_text : "";
     const tryParsed = extractJson(outputText);
     if (!tryParsed) {
-      throw new HttpError(400, "Model did not return a submit_results tool call", {
+      throw new HttpError(400, "Model did not return a submit_results tool/function call", {
         output_text_excerpt: outputText.slice(0, SAFE_DEBUG_MAX),
         raw_excerpt: JSON.stringify(json).slice(0, SAFE_DEBUG_MAX),
         x_request_id: requestIdHeader
@@ -265,7 +272,7 @@ app.get("/api/llm_preview", async (c)=>{
   const list_text = cleanText(c.req.query("list_text") || "");
   if (!address || !list_text){
     return c.json({ status:"need_input", needed:["address","list_text"], requestId:id }, 400);
-    }
+  }
 
   const userPrompt =
 `address: ${address}
