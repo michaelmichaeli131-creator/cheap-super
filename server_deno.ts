@@ -1,10 +1,10 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (built-in web_search) — JSON schema enforced
+// Deno + Hono + OpenAI Responses API (web_search) — JSON schema via text.format
 //
 // ENV (Deno Deploy / local):
 // OPENAI_API_KEY=sk-...
-// OPENAI_MODEL=gpt-5.1            (או o4-mini / gpt-4o-mini)
-// DEBUG=true                      (לא חובה; מוסיף דיבוג)
+// OPENAI_MODEL=gpt-5.1           // או o4-mini / gpt-4o-mini / gpt-5.1-mini
+// DEBUG=false                     // production=false; אפשר true מקומית
 //
 // Run locally:
 // DEBUG=true OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-5.1 deno run --allow-net --allow-env --allow-read server_deno.ts
@@ -17,10 +17,11 @@ const app = new Hono();
 
 // ===== ENV =====
 const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
-const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1"; // ברירת מחדל — ניתן לשנות ל-o4-mini/gpt-4o-mini
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.1";
 const DEBUG = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
 
 // ===== Utils =====
+const SAFE_DEBUG_MAX = 600; // אל תקפיצו דיבוג ענק ללקוח
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
@@ -58,7 +59,7 @@ function cleanText(s: string, maxLen = 280): string {
   return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
 }
 
-// ===== System Prompt (קשוח) =====
+// ===== System Prompt (קשוח + סינון מקורות) =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
@@ -68,7 +69,8 @@ INPUTS PROVIDED:
 - list_text (free-form shopping list)
 
 TOOLS AVAILABLE:
-- web_search: use it to find current, real prices from real Israeli stores (supermarkets, e-commerce, comparison sites). Prefer product/store pages over blogs/news.
+- web_search: use it to find current, real prices from real Israeli stores (supermarkets, e-commerce, comparison sites).
+  Prefer product/store pages over blogs/news.
 
 TASK:
 1) Parse list_text into concrete items (name, quantity, brand if known, size when obvious).
@@ -112,13 +114,15 @@ HARD RULES:
 - Currency symbol must be "₪" for Israel.
 - No zeros unless page explicitly shows 0.
 - Absolutely NO TEXT OUTSIDE JSON.
+- Ignore code repositories, source files, developer docs/blogs (e.g., GitHub/Gist/NPM/StackOverflow).
+- Focus ONLY on Israeli retail product/store pages with explicit prices (e.g., rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, mega.co.il, osherad.co.il).
+- If a page is mostly code or technical text, do not use it as a source.
 `.trim();
 
-// ===== OpenAI Responses API (web_search) — JSON schema enforced =====
+// ===== OpenAI Responses API (web_search) — JSON schema via text.format =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // סכמה קפדנית לפלט
   const schema = {
     name: "cart_compare_results",
     strict: true,
@@ -173,16 +177,17 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
 
   const body = {
     model: OPENAI_MODEL,
-    instructions: systemPrompt,          // acts like system prompt
-    input: userPrompt,                   // user's payload (address/radius/list)
-    tools: [{ type: "web_search" }],     // let the model browse the web
+    instructions: systemPrompt,   // system
+    input: userPrompt,            // user
+    tools: [{ type: "web_search" }],
     tool_choice: "auto",
     max_output_tokens: 1800,
-    response_format: {                   // enforce JSON
-      type: "json_schema",
-      json_schema: schema
-    },
-    temperature: 0.2
+    temperature: 0.2,
+    // >>> שינוי מהגרסה הישנה: response_format -> text.format + schema
+    text: {
+      format: "json_schema",
+      schema: schema
+    }
   };
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
@@ -200,19 +205,19 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     throw new HttpError(resp.status, `OpenAI ${resp.status}: ${JSON.stringify(json)}`);
   }
 
-  // בשימוש עם json_schema — נקבל output_parsed
+  // עם text.format=json_schema נקבל output_parsed
   const parsed = (json.output_parsed ?? null);
   if (parsed && parsed.status === "ok" && Array.isArray(parsed.results)) {
     return { parsed, raw: json, output_text: undefined };
   }
 
-  // fallback: ננסה לפענח טקסט אם משום מה אין output_parsed
-  const text =
+  // fallback: אם משום מה אין output_parsed — ננסה לפענח טקסט (לא מחזירים ללקוח במלואו)
+  const textOut =
     (typeof json.output_text === "string" && json.output_text) ||
     (Array.isArray(json.output) ? json.output.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
     "";
-  const tryParsed = extractJson(String(text));
-  return { parsed: tryParsed, raw: json, output_text: text };
+  const tryParsed = extractJson(String(textOut));
+  return { parsed: tryParsed, raw: json, output_text: textOut };
 }
 
 // ===== API =====
@@ -235,7 +240,7 @@ app.get("/api/health", (c)=>{
   return c.json(payload);
 });
 
-// תצוגת הפרומפט+אינפוט (בלי להריץ מודל) — דיבוג
+// תצוגת פרומפט+אינפוט (בלי להריץ מודל) — דיבוג
 app.get("/api/llm_preview", async (c)=>{
   if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
   const id = rid();
@@ -251,19 +256,20 @@ app.get("/api/llm_preview", async (c)=>{
 radius_km: ${radius_km}
 list_text: ${list_text}
 
-NOTE: Use web_search to find current prices in ₪ on Israeli stores and return STRICT JSON only (see schema in system instructions).`;
+SEARCH SCOPE:
+- Use web_search only on Israeli retailer domains (rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, mega.co.il, osherad.co.il).
+- Ignore GitHub/Gist/NPM/docs/blogs.
+
+NOTE: Return STRICT JSON only (see schema in system instructions).`;
 
   return c.json({
     status:"ok",
-    debug:{
-      instructions: PROMPT_SYSTEM,
-      user_input: userPrompt
-    },
+    debug:{ instructions: PROMPT_SYSTEM, user_input: userPrompt },
     requestId: id
   });
 });
 
-// חיפוש ראשי — OpenAI web_search בלבד (מתעלם מ-?provider=... אם נשלח מהלקוח)
+// חיפוש ראשי — OpenAI web_search בלבד
 app.post("/api/search", async (c)=>{
   const id = rid();
   try{
@@ -291,16 +297,21 @@ INSTRUCTIONS:
 - Use web_search to collect real prices (₪) from Israeli retailers near the address.
 - Prefer product/store pages; include product_url and source_domain for each basket line when available.
 - If price not explicit, estimate (lower confidence) and add notes.
-- Return STRICT JSON only (see schema in system instructions).`;
+- Return STRICT JSON only (see schema in system instructions).
+
+SEARCH SCOPE:
+- Allowed retailer domains (not exhaustive): rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, mega.co.il, osherad.co.il.
+- Ignore code repositories, developer docs/blogs and technical pages.`;
 
     const { parsed, raw, output_text } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
 
     if (!parsed || parsed.status !== "ok" || !Array.isArray(parsed.results)) {
+      const safeText = typeof output_text === "string" ? output_text.slice(0, SAFE_DEBUG_MAX) : undefined;
       return c.json({
         status: "no_results",
         message: "Model did not return expected JSON shape",
         results: [],
-        debug: DEBUG ? { output_text, openai_raw: raw } : undefined,
+        debug: DEBUG ? { output_text: safeText, has_more: (safeText && output_text && (output_text.length>SAFE_DEBUG_MAX)) || false } : undefined,
         requestId: id
       }, 502);
     }
@@ -333,7 +344,10 @@ app.get("/", async (c)=>{
     info(id, "Serving ./public/index.html");
     return c.newResponse(html, 200, { "content-type":"text/html; charset=utf-8" });
   }
-  return c.newResponse(`<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>Upload <code>public/index.html</code> to show the UI.</p>`, 200);
+  return c.newResponse(
+    "<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>Upload <code>public/index.html</code> to show the UI.</p>",
+    200
+  );
 });
 
 app.notFound(async (c)=>{
