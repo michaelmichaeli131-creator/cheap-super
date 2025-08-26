@@ -118,7 +118,8 @@ HARD RULES:
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // Relaxed strict JSON Schema: allow empty arrays, make "notes" optional
+  // IMPORTANT: With Structured Outputs, 'required' must list *every* key in 'properties' (even nullable).
+  // Docs/discussions confirm this behavior. :contentReference[oaicite:2]{index=2}
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -137,6 +138,7 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
             "distance_km",
             "currency",
             "total_price",
+            "notes",          // ← include in required
             "basket",
             "match_overall"
           ],
@@ -162,7 +164,8 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
                   "product_url",
                   "source_domain",
                   "match_confidence",
-                  "substitution"
+                  "substitution",
+                  "notes"          // ← include in required
                 ],
                 properties: {
                   name: { type: "string" },
@@ -189,9 +192,9 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     model: OPENAI_MODEL,
     instructions: systemPrompt,
     input: userPrompt,
-    // Built-in web search tool
+    // Built-in web search tool (official doc). :contentReference[oaicite:3]{index=3}
     tools: [{ type: "web_search" }],
-    // Force using the tool (since it's the only one, it will be web_search)
+    // Force using the tool so it actually browses. :contentReference[oaicite:4]{index=4}
     tool_choice: "required",
     // no temperature (some models don’t support it)
     max_output_tokens: 1800,
