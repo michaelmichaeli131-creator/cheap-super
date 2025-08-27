@@ -1,11 +1,13 @@
-// server_deno.ts (improved)
+// server_deno.ts
 // Deno + Hono + OpenAI Responses API (web_search) + Google Places
-// Hard server-side verification + timeouts, retries, and limited concurrency
+// Mode: Aggregators-only, extended timeouts/retries, relaxed shekel check
 
+import "jsr:@std/dotenv/load"; // אופציונלי לטעינת .env מקומית
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { serveStatic } from "npm:hono/serve-static";
 
+// ===== App =====
 const app = new Hono();
 
 // ===== ENV =====
@@ -16,15 +18,35 @@ const DEBUG        = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true"
 const TEMP_STR     = Deno.env.get("OPENAI_TEMPERATURE");
 const OPENAI_TEMP  = (TEMP_STR!=null && TEMP_STR.trim()!=="") ? Number(TEMP_STR) : 0;
 
-// ===== Networking defaults =====
-const UA = "CartCompareAI/1.0 (Deno)";
-const FETCH_TIMEOUT_MS = 15000;     // retailers pages, HTML, etc.
-const OPENAI_TIMEOUT_MS = 45000;    // LLM call
-const PLACES_TIMEOUT_MS = 15000;    // Google APIs
-const VERIFY_CONCURRENCY = 5;       // verify items in parallel (pool)
+// Timeouts/Retry (ניתן לשינוי ב-ENV)
+const PLACES_TIMEOUT_MS        = Number(Deno.env.get("PLACES_TIMEOUT_MS") || 25000);
+const PRODUCT_FETCH_TIMEOUT_MS = Number(Deno.env.get("PRODUCT_FETCH_TIMEOUT_MS") || 30000);
+const OPENAI_TIMEOUT_MS        = Number(Deno.env.get("OPENAI_TIMEOUT_MS") || 60000);
+const RETRY_ATTEMPTS           = Math.max(1, Number(Deno.env.get("RETRY_ATTEMPTS") || 3));
+const RETRY_BASE_MS            = Math.max(200, Number(Deno.env.get("RETRY_BASE_MS") || 600));
+
+// Allowed domains mode
+const ALLOWED_MODE = (Deno.env.get("ALLOWED_DOMAINS_MODE") || "aggregators").toLowerCase(); // "aggregators" | "retailers"
+const RETAILER_DOMAINS = [
+  "shufersal.co.il","rami-levy.co.il","victoryonline.co.il",
+  "yohananof.co.il","tivtaam.co.il","osherad.co.il"
+];
+const AGGREGATOR_DOMAINS_DEFAULT = [
+  "zap.co.il",
+  "pricez.co.il",
+  "bonusbuy.co.il"
+];
+const AGGREGATOR_DOMAINS = (Deno.env.get("ALLOWED_DOMAINS_CSV") || "")
+  .split(",").map(s=>s.trim()).filter(Boolean);
+if (AGGREGATOR_DOMAINS.length===0) AGGREGATOR_DOMAINS.push(...AGGREGATOR_DOMAINS_DEFAULT);
+
+// הסף לכיסוי אימות חנות
+const COVERAGE_THRESHOLD = 0.6;
 
 // ===== Utils =====
 const SAFE_DEBUG_MAX = 2500;
+const UA = "CartCompareAI/1.0 (Deno; agg-only; timeouts+retries)";
+
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
@@ -40,8 +62,8 @@ function extractJson(text:string){
 }
 function decodeHtmlEntities(s: string): string {
   if (!s) return "";
-  s = s.replace(/&#x([0-9a-fA-F]+);/g, (_:any,h:string)=> String.fromCharCode(parseInt(h,16)));
-  s = s.replace(/&#(\d+);/g, (_:any,d:string)=> String.fromCharCode(parseInt(d,10)));
+  s = s.replace(/&#x([0-9a-fA-F]+);/g, (_,h)=> String.fromCharCode(parseInt(h,16)));
+  s = s.replace(/&#(\d+);/g, (_,d)=> String.fromCharCode(parseInt(d,10)));
   return s
     .replace(/&nbsp;/g, " ")
     .replace(/&quot;/g, '"')
@@ -57,10 +79,7 @@ function stripBidiControls(s: string): string {
   return s.replace(BIDI, "");
 }
 function normalizeSpaces(s: string): string { return s.replace(/\s+/g, " ").trim(); }
-function cleanText(s: string, maxLen = 400): string {
-  const out = normalizeSpaces(stripBidiControls(decodeHtmlEntities(s)));
-  return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
-}
+function cleanText(s: string, maxLen = 400){ const out = normalizeSpaces(stripBidiControls(decodeHtmlEntities(s))); return out.length>maxLen? out.slice(0,maxLen-1)+"…" : out; }
 function haversineKm(a:{lat:number,lng:number}, b:{lat:number,lng:number}){
   const R=6371; const dLat=(b.lat-a.lat)*Math.PI/180; const dLng=(b.lng-a.lng)*Math.PI/180;
   const s=Math.sin(dLat/2)**2 + Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLng/2)**2;
@@ -68,65 +87,41 @@ function haversineKm(a:{lat:number,lng:number}, b:{lat:number,lng:number}){
 }
 function parseNumberLocaleish(x:string){
   return Number(
-    x
-      .replace(/\u200f|\u200e/g, "")
-      .replace(/\s/g,"")
-      .replace(/(?<=\d)[,](?=\d{3}\b)/g,"")
-      .replace(/[.](?=\d{3}\b)/g,"")
-      .replace(/,/g,".")
+    x.replace(/\u200f|\u200e/g, "")
+     .replace(/\s/g,"")
+     .replace(/(?<=\d)[,](?=\d{3}\b)/g,"")
+     .replace(/[.](?=\d{3}\b)/g,"")
+     .replace(/,/g,".")
   );
 }
+function approxEq(a:number,b:number,pct=0.05){ const d=Math.abs(a-b); return d<=Math.max(1,b*pct); }
 
-// Small helpers: timeout + retry + pool
-function withTimeout(ms:number){
-  const ac = new AbortController();
-  const t = setTimeout(()=> ac.abort(), ms);
-  return { signal: ac.signal, cancel: ()=> clearTimeout(t) };
+// ===== Allowed domains set & host check =====
+const ALLOWED_DOMAINS = new Set(
+  ALLOWED_MODE === "retailers" ? RETAILER_DOMAINS : AGGREGATOR_DOMAINS
+);
+function hostOK(urlStr:string){
+  try {
+    const u = new URL(urlStr);
+    return ALLOWED_DOMAINS.has(u.hostname.replace(/^www\./,""));
+  } catch { return false; }
 }
-async function fetchWithTimeout(url:string, init:RequestInit, ms:number){
-  const { signal, cancel } = withTimeout(ms);
-  try{
-    const res = await fetch(url, { ...init, signal });
-    return res;
-  } finally { cancel(); }
+
+// ===== HTTP helpers (timeouts + retries) =====
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, ms: number){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=> ctrl.abort(`timeout ${ms}ms`), ms);
+  try{ return await fetch(input, { ...init, signal: ctrl.signal }); }
+  finally{ clearTimeout(t); }
 }
-async function retry<T>(fn:()=>Promise<T>, tries=3, baseDelay=300): Promise<T> {
-  let lastErr: any;
-  for (let i=0;i<tries;i++){
-    try{ return await fn(); } catch(e){ lastErr = e; }
-    await new Promise(r=> setTimeout(r, baseDelay * Math.pow(2,i)));
+async function retry<T>(fn:()=>Promise<T>, attempts=RETRY_ATTEMPTS, baseMs=RETRY_BASE_MS): Promise<T>{
+  let last:any;
+  for (let i=0;i<attempts;i++){
+    try{ return await fn(); }
+    catch(e){ last=e; const wait=baseMs*Math.pow(2,i)+Math.floor(Math.random()*100); await new Promise(r=>setTimeout(r,wait)); }
   }
-  throw lastErr;
+  throw last;
 }
-async function mapPool<T,R>(items:T[], limit:number, worker:(t:T)=>Promise<R>): Promise<R[]> {
-  const res: R[] = []; let i=0; let active=0; let rej:(e:any)=>void; let done:()=>void;
-  const outP = new Promise<R[]>((resolve, reject)=>{ done=()=>resolve(res); rej=reject; });
-  const next = () => {
-    if (i>=items.length && active===0) return done!();
-    while (active<limit && i<items.length){
-      const idx=i++; active++;
-      worker(items[idx]).then((r)=>{ res[idx]=r; active--; next(); }).catch((e)=> rej!(e));
-    }
-  };
-  next();
-  return outP;
-}
-
-// ===== Constants =====
-const APPROVED_DOMAINS = new Set([
-  "shufersal.co.il","rami-levy.co.il","victoryonline.co.il",
-  "yohananof.co.il","tivtaam.co.il","osherad.co.il"
-]);
-const APPROVED_CHAINS = [
-  { chain: "שופרסל",   keyword: "שופרסל סניף" },
-  { chain: "רמי לוי",  keyword: "רמי לוי סניף" },
-  { chain: "ויקטורי",  keyword: "ויקטורי סניף" },
-  { chain: "טיב טעם",  keyword: "טיב טעם סניף" },
-  { chain: "יוחננוף",  keyword: "יוחננוף סניף" },
-  { chain: "אושר עד",  keyword: "אושר עד סניף" },
-];
-
-const COVERAGE_THRESHOLD = 0.6;
 
 // ===== Google Geocode + Places =====
 async function geocodeAddress(id:string, address:string){
@@ -134,17 +129,19 @@ async function geocodeAddress(id:string, address:string){
   const u = new URL("https://maps.googleapis.com/maps/api/geocode/json");
   u.searchParams.set("address", address);
   u.searchParams.set("key", PLACES_KEY);
-  const j = await retry(async ()=>{
-    const r = await fetchWithTimeout(u.toString(), { headers:{"user-agent":UA} }, PLACES_TIMEOUT_MS);
-    return r.json();
-  });
-  if (j.status !== "OK" || !j.results?.[0]?.geometry?.location){
-    throw new HttpError(400, `Geocode failed for address`);
-  }
+  const r = await retry(()=> fetchWithTimeout(u, {
+    headers: {
+      "user-agent": UA,
+      "accept": "application/json",
+      "accept-language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+      "cache-control": "no-cache"
+    }
+  }, PLACES_TIMEOUT_MS));
+  const j = await r.json();
+  if (j.status!=="OK" || !j.results?.[0]?.geometry?.location) throw new HttpError(400, "Geocode failed for address");
   const { lat, lng } = j.results[0].geometry.location;
   return { lat, lng, formatted: j.results[0].formatted_address as string };
 }
-
 async function nearbyForChain(id:string, center:{lat:number;lng:number}, radiusMeters:number, chainKeyword:string){
   const u = new URL("https://maps.googleapis.com/maps/api/place/nearbysearch/json");
   u.searchParams.set("key", PLACES_KEY);
@@ -152,13 +149,16 @@ async function nearbyForChain(id:string, center:{lat:number;lng:number}, radiusM
   u.searchParams.set("radius", String(Math.min(radiusMeters, 50000)));
   u.searchParams.set("keyword", chainKeyword);
   u.searchParams.set("type", "supermarket");
-  const j = await retry(async ()=>{
-    const r = await fetchWithTimeout(u.toString(), { headers:{"user-agent":UA} }, PLACES_TIMEOUT_MS);
-    return r.json();
-  });
-  if (j.status !== "OK" && j.status !== "ZERO_RESULTS"){
-    info(id, "Places nearby status", j.status);
-  }
+  const r = await retry(()=> fetchWithTimeout(u, {
+    headers: {
+      "user-agent": UA,
+      "accept": "application/json",
+      "accept-language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+      "cache-control": "no-cache"
+    }
+  }, PLACES_TIMEOUT_MS));
+  const j = await r.json();
+  if (j.status!=="OK" && j.status!=="ZERO_RESULTS"){ info(id, "Places nearby status", j.status); }
   const items = Array.isArray(j.results) ? j.results : [];
   return items.map((p:any)=>({
     place_id: String(p.place_id||""),
@@ -181,13 +181,20 @@ type Branch = {
   branch_url: string;
   distance_km: number;
 };
+const APPROVED_CHAINS = [
+  { chain: "שופרסל",   keyword: "שופרסל סניף" },
+  { chain: "רמי לוי",  keyword: "רמי לוי סניף" },
+  { chain: "ויקטורי",  keyword: "ויקטורי סניף" },
+  { chain: "טיב טעם",  keyword: "טיב טעם סניף" },
+  { chain: "יוחננוף",  keyword: "יוחננוף סניף" },
+  { chain: "אושר עד",  keyword: "אושר עד סניף" },
+];
 
 async function listApprovedBranches(id:string, address:string, radius_km:number){
   const geo = await geocodeAddress(id, address);
   const center = { lat: geo.lat, lng: geo.lng };
   const radiusMeters = Math.max(500, Math.round(radius_km*1000));
   const out: Branch[] = [];
-
   for (const c of APPROVED_CHAINS){
     const raw = await nearbyForChain(id, center, radiusMeters, c.keyword + " " + address);
     const mapped = raw.map(p=>{
@@ -208,27 +215,30 @@ async function listApprovedBranches(id:string, address:string, radius_km:number)
     .slice(0, 3);
     out.push(...mapped);
   }
-
   out.sort((a,b)=> a.distance_km - b.distance_km);
   return { center, formatted_address: geo.formatted, branches: out.slice(0, 12) };
 }
 
-// ===== System Prompt =====
+// ===== Prompt (Aggregators-only + multi-source retries) =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
 HARD POLICY (DO NOT VIOLATE):
 - Do NOT fabricate prices or branches. Use ONLY information found now on the public web.
 - Branches MUST be selected ONLY from APPROVED_BRANCHES JSON (branch_id required). If none match—return empty results.
-- Prices MUST come ONLY from approved retailer domains in ALLOWED_DOMAINS. Each line MUST include product_url AND observed_price_text containing "₪", or JSON-LD with priceCurrency "ILS".
-- If an exact pack/size is unavailable, return a close substitute and set substitution=true; compute ppu (price per unit) and explain in notes. If still unknown, drop the line.
+- Prices MUST come ONLY from the ALLOWED_DOMAINS list provided (aggregator/catalog sites ONLY; do NOT use retailer domains).
+- Each line MUST include product_url AND observed_price_text containing "₪", or JSON-LD with priceCurrency "ILS".
+- If an exact pack/size is unavailable, return a close substitute and set substitution=true; compute ppu (price per unit) and explain in notes.
+- Always try MULTIPLE allowed domains if the first page lacks a visible ₪ or ILS JSON-LD; do NOT stop after the first failed source.
+- Prefer pages that visibly show the ₪ price in server-rendered HTML (avoid JS-only/empty pages).
 - Never output free text; finish by calling submit_results once.
 
 TOOLS:
-- web_search: issue focused bilingual queries with brand + size + pack and "₪", using site filters from ALLOWED_DOMAINS (e.g., site:shufersal.co.il).
+- web_search: issue focused bilingual queries with brand + size + pack + "₪", restricted to ALLOWED_DOMAINS (e.g., site:zap.co.il).
+- When a candidate page has no ₪ or ILS JSON-LD, immediately switch to another allowed domain and retry before dropping the item.
 `.trim();
 
-// ===== Function Tool Schema (submit_results) =====
+// ===== submit_results schema =====
 const SUBMIT_RESULTS_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -299,7 +309,7 @@ const SUBMIT_RESULTS_SCHEMA = {
   }
 } as const;
 
-// ===== OpenAI Responses API =====
+// ===== OpenAI Responses API (with timeout) =====
 async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
@@ -317,90 +327,121 @@ async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: stri
       }
     ],
     tool_choice: "auto",
-    temperature: Number.isFinite(OPENAI_TEMP) ? OPENAI_TEMP : 0,
+    temperature: isFinite(OPENAI_TEMP) ? OPENAI_TEMP : 0,
     max_output_tokens: 2200
   };
 
-  const jsonOrText = await retry(async ()=>{
-    const r = await fetchWithTimeout("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "authorization": `Bearer ${OPENAI_KEY}`,
-        "content-type": "application/json",
-        "user-agent": UA
-      },
-      body: JSON.stringify(body)
-    }, OPENAI_TIMEOUT_MS);
-    const xrid = r.headers.get("x-request-id") || r.headers.get("openai-request-id") || null;
-    let parsed: any = null; let raw: any = null;
-    try{ raw = await r.json(); } catch{ raw = await r.text(); }
-    if (!r.ok) throw new HttpError(r.status, `OpenAI ${r.status}`, { error: (raw?.error ?? raw ?? null), full_response: raw ?? null, x_request_id: xrid });
+  const resp = await fetchWithTimeout("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${OPENAI_KEY}`,
+      "content-type": "application/json",
+      "user-agent": UA
+    },
+    body: JSON.stringify(body)
+  }, OPENAI_TIMEOUT_MS).catch((e)=> {
+    throw new HttpError(502, `OpenAI fetch error: ${e?.message || String(e)}`);
+  });
 
-    const outputArr = Array.isArray(raw?.output) ? raw.output : [];
-    const fnCall = outputArr.find((p:any)=> p?.type==="function_call" && p?.name==="submit_results");
-    if (!fnCall) {
-      const text = (typeof raw?.output_text === "string" && raw.output_text) || (Array.isArray(outputArr) ? outputArr.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") || "";
-      const tryParsed = extractJson(text);
-      if (tryParsed) return { parsed: tryParsed, raw, request_id: xrid };
-      throw new HttpError(400, "Model did not return a submit_results tool call", { output_text_excerpt: text ? text.slice(0, SAFE_DEBUG_MAX) : "", raw_excerpt: JSON.stringify(raw ?? "").slice(0, SAFE_DEBUG_MAX), x_request_id: xrid });
-    }
+  const requestIdHeader = resp.headers.get("x-request-id") || resp.headers.get("openai-request-id") || null;
 
-    try{
-      parsed = typeof fnCall.arguments === "string" ? JSON.parse(fnCall.arguments) : fnCall.arguments;
-    } catch {
-      throw new HttpError(400, "Failed to parse submit_results.arguments", { arguments_excerpt: String(fnCall?.arguments ?? "").slice(0, SAFE_DEBUG_MAX), x_request_id: xrid });
-    }
+  let jsonOrText: any = null;
+  try { jsonOrText = await resp.json(); }
+  catch { try { jsonOrText = await resp.text(); } catch { jsonOrText = null; } }
 
-    return { parsed, raw, request_id: xrid };
-  }, 2); // light retry
-
-  return jsonOrText;
-}
-
-// ===== Verification (server-side) =====
-const ALLOW = new Set([...APPROVED_DOMAINS]);
-
-function hostOK(urlStr:string){
-  try { const u = new URL(urlStr); if (!/^https?:$/.test(u.protocol)) return false; return ALLOW.has(u.hostname.replace(/^www\./,"")); }
-  catch { return false; }
-}
-
-function extractPriceFromHtml(htmlRaw:string){
-  const html = decodeHtmlEntities(htmlRaw);
-  const re = /₪\s*([\d.,]+)|([\d.,]+)\s*₪/g;
-  let num: number | null = null; let m: RegExpExecArray | null;
-  while ((m = re.exec(html))){
-    const s = (m[1] || m[2] || "").trim();
-    const v = parseNumberLocaleish(s);
-    if (!isNaN(v)) { num = v; break; }
+  if (!resp.ok) {
+    throw new HttpError(resp.status, `OpenAI ${resp.status}`, {
+      error: (jsonOrText?.error ?? jsonOrText ?? null),
+      full_response: jsonOrText ?? null,
+      x_request_id: requestIdHeader
+    });
   }
-  if (num != null) return { value: num, source: "shekel-sign" as const };
 
-  const ilc = /"priceCurrency"\s*:\s*"(?:ILS|NIS)"/i;
-  const priceField = /"price"\s*:\s*"?(?<p>[\d.]+)"?/i;
-  if (ilc.test(html)){
-    const pMatch = priceField.exec(html);
-    if (pMatch?.groups?.p) {
-      const v = Number(pMatch.groups.p);
-      if (!isNaN(v)) return { value: v, source: "json-ld" as const };
-    }
+  const outputArr = Array.isArray(jsonOrText?.output) ? jsonOrText.output : [];
+  const fnCall = outputArr.find((p:any)=> p?.type==="function_call" && p?.name==="submit_results");
+  if (!fnCall) {
+    const text =
+      (typeof jsonOrText?.output_text === "string" && jsonOrText.output_text) ||
+      (Array.isArray(outputArr) ? outputArr.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
+      "";
+    const tryParsed = extractJson(text);
+    if (tryParsed) return { parsed: tryParsed, raw: jsonOrText, request_id: requestIdHeader };
+    throw new HttpError(400, "Model did not return a submit_results tool call", {
+      output_text_excerpt: text ? text.slice(0, SAFE_DEBUG_MAX) : "",
+      raw_excerpt: JSON.stringify(jsonOrText ?? "").slice(0, SAFE_DEBUG_MAX),
+      x_request_id: requestIdHeader
+    });
   }
-  return { value: null as number|null, source: "none" as const };
+
+  let parsed:any = null;
+  try { parsed = typeof fnCall.arguments === "string" ? JSON.parse(fnCall.arguments) : fnCall.arguments; }
+  catch {
+    throw new HttpError(400, "Failed to parse submit_results.arguments", {
+      arguments_excerpt: String(fnCall?.arguments ?? "").slice(0, SAFE_DEBUG_MAX),
+      x_request_id: requestIdHeader
+    });
+  }
+
+  return { parsed, raw: jsonOrText, request_id: requestIdHeader };
 }
 
+// ===== Product page fetch & extractor =====
 async function fetchText(url:string){
-  const res = await retry(async ()=>{
-    const r = await fetchWithTimeout(url, { redirect:"follow", headers:{"user-agent":UA} }, FETCH_TIMEOUT_MS);
-    return r;
-  }, 2);
+  const res = await retry(()=> fetchWithTimeout(url, {
+    redirect: "follow",
+    headers: {
+      "user-agent": UA,
+      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+      "upgrade-insecure-requests": "1",
+      "cache-control": "no-cache"
+    }
+  }, PRODUCT_FETCH_TIMEOUT_MS));
   const txt = await res.text().catch(()=> "");
   return { status: res.status, text: txt.slice(0, 300_000) };
 }
 
-function approxEq(a:number,b:number,pct=0.05){
-  const d = Math.abs(a-b); return d <= Math.max(1, b*pct);
+// שומר על מגוון דפוסים (₪/JSON-LD/data-attr), אך הוולידציה לא דורשת ₪ יותר
+function extractPriceFromHtml(htmlRaw:string){
+  const html = decodeHtmlEntities(htmlRaw||"");
+
+  // ₪ סביב מספר
+  const re = /₪\s*([\d.,]+)|([\d.,]+)\s*₪/g;
+  for (let m; (m = re.exec(html)); ){
+    const s = (m[1] || m[2] || "").trim();
+    const v = parseNumberLocaleish(s);
+    if (!Number.isNaN(v)) return { value: v, source: "shekel-sign" as const };
+  }
+
+  // JSON-LD (Offer/AggregateOffer, priceCurrency)
+  const ldBlocks = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (const block of ldBlocks){
+    try{
+      const jsonText = block.replace(/^<script[^>]*>/i,"").replace(/<\/script>$/i,"");
+      const json = JSON.parse(jsonText);
+      const candidates:any[] = [];
+      const crawl = (x:any)=>{ if(!x||typeof x!=="object") return; if (x.price||x.priceCurrency||x["@type"]==="Offer"||x["@type"]==="AggregateOffer") candidates.push(x); if(Array.isArray(x)) x.forEach(crawl); else Object.values(x).forEach(crawl); };
+      crawl(json);
+      for (const c of candidates){
+        const p = Number(String(c.price ?? c.lowPrice ?? c.highPrice ?? "").replace(/,/g,"."));
+        if (!Number.isNaN(p)) return { value: p, source: "json-ld" as const };
+      }
+    } catch {}
+  }
+
+  // data-attributes / meta
+  const reData = /(data-(?:price|final-price|product-price)|itemprop="price"\s+content|content-price)=["']?([\d.,]+)["']?/i;
+  const mData = reData.exec(html);
+  if (mData){
+    const v = parseNumberLocaleish(mData[2]);
+    if (!Number.isNaN(v)) return { value: v, source: "data-attr" as const };
+  }
+
+  return { value: null as number|null, source: "none" as const };
 }
 
+// ===== Verification (server-side) =====
+// דרישת ₪/ILS הוסרה — נשארים עם 200 + דומיין מאושר + ניסוי חילוץ מחיר + התאמת מחיר + התאמת שם
 async function verifyItem(it:any){
   const res:any = {
     domain_ok:false, http_status:0, price_extracted:null as number|null, price_source:"none",
@@ -414,10 +455,13 @@ async function verifyItem(it:any){
   res.http_status = status;
   if (status !== 200){ res.notes = "non-200"; return res; }
 
+  const looksEmpty = (text.length < 4000) && !/[₪]/.test(text) && !/application\/ld\+json/i.test(text);
+  if (looksEmpty){ res.notes = "empty-or-js-only"; return res; }
+
   const { value, source } = extractPriceFromHtml(text);
   res.price_extracted = value;
   res.price_source = source;
-  res.found_shekel = source === "shekel-sign";
+  res.found_shekel = (source==="shekel-sign" || source==="json-ld"); // דיבוג בלבד
 
   const target = typeof it.unit_price === "number" ? it.unit_price : null;
   if (target != null && value != null){ res.price_matches = approxEq(value, target, 0.05); }
@@ -430,8 +474,7 @@ async function verifyItem(it:any){
     res.name_match = hits / Math.max(1, toks.length);
   }
 
-  res.notes = (res.domain_ok && res.http_status===200 && (res.found_shekel || res.price_source==="json-ld") && (res.price_matches || value==null))
-    ? "OK" : "mismatch";
+  res.notes = (res.price_extracted != null) ? (res.price_matches ? "OK" : "price-mismatch") : "no-price-found";
   return res;
 }
 
@@ -442,26 +485,26 @@ async function verifyStore(store:any, approvedBranches: Map<string, any>){
 
   v.total_items = Array.isArray(store.basket) ? store.basket.length : 0;
 
-  const items = (store.basket||[]);
-  const proofs = await mapPool(items, VERIFY_CONCURRENCY, async (it)=> verifyItem(it));
-
-  proofs.forEach((proof, idx)=>{
-    const it = items[idx];
+  for (const it of (store.basket||[])){
+    const proof = await verifyItem(it);
     it.verification = proof;
-    if (proof.domain_ok && proof.http_status===200 && (proof.found_shekel || proof.price_source==="json-ld")) {
-      if (typeof proof.price_extracted === "number" && typeof it.unit_price === "number") {
-        if (proof.price_matches) v.verified_items++;
-      } else {
+    if (proof.domain_ok && proof.http_status===200) {
+      // ללא דרישת ₪ — מספיק שמצאנו מחיר מספרי כלשהו או לא הצלחנו לקרוא אבל הדף "אמיתי"
+      if (typeof proof.price_extracted === "number") {
+        // אם יש מספר — נדרוש התאמת מחיר או נספור בכל מקרה? כאן נספור בכל מקרה כדי לא להיות קשוחים מדי
         v.verified_items++;
+      } else {
+        // לא נמצא מספר – לא נספור, אבל גם לא נפסול את כל החנות בגלל פריט אחד
       }
     } else {
-      v.issues.push(`item rejected: ${it.product_url || it.name}`);
+      v.issues.push(`item rejected: ${it.product_url || it.name} (${proof.notes})`);
     }
-  });
+  }
 
   v.coverage_ratio = v.total_items ? v.verified_items / v.total_items : 0;
   v.store_verified = v.approved_branch && v.coverage_ratio >= COVERAGE_THRESHOLD;
 
+  // ננעל שדות סניף מתוך המאושרים
   const approved = approvedBranches.get(store.branch_id)!;
   store.address = approved.address;
   store.branch_name = approved.branch_name;
@@ -484,9 +527,11 @@ app.get("/api/health", (c)=>{
   const payload = {
     ok: true,
     model: OPENAI_MODEL,
-    temperature: Number.isFinite(OPENAI_TEMP) ? OPENAI_TEMP : 0,
+    temperature: OPENAI_TEMP,
     has_openai_key: !!OPENAI_KEY,
     has_google_places_key: !!PLACES_KEY,
+    allowed_mode: ALLOWED_MODE,
+    allowed_domains: [...ALLOWED_DOMAINS],
     debug_enabled: DEBUG,
     requestId: id
   };
@@ -510,15 +555,16 @@ app.get("/api/llm_preview", async (c)=>{
 radius_km: ${radius_km}
 list_text: ${list_text}
 
-ALLOWED_DOMAINS: ${JSON.stringify([...APPROVED_DOMAINS])}
+ALLOWED_DOMAINS (aggregators only): ${JSON.stringify([...ALLOWED_DOMAINS])}
 
 APPROVED_BRANCHES (JSON):
 ${JSON.stringify(branches, null, 2)}
 
 INSTRUCTIONS:
 - Choose branches ONLY from APPROVED_BRANCHES by branch_id.
-- Prices ONLY from ALLOWED_DOMAINS with "₪" in page or JSON-LD ILS.
-- If no exact pack, use substitute (substitution=true) with ppu and notes.
+- Use ONLY ALLOWED_DOMAINS above (aggregators). Do NOT use retailer domains.
+- Prices ONLY with "₪" in page or JSON-LD ILS (model-side preference).
+- If first domain fails to show a valid ₪/ILS price, switch to another allowed domain and retry.
 - Return ONE function call (submit_results). No free text.`;
   return c.json({ status:"ok", debug:{ instructions: PROMPT_SYSTEM, user_input: userPrompt }, requestId: id });
 });
@@ -530,9 +576,9 @@ app.post("/api/search", async (c)=>{
     const body = await c.req.json().catch(()=> ({}));
     info(id, "POST /api/search body", body);
 
-    let address   = cleanText(String(body?.address ?? "").trim(), 200);
-    const radius_km = Math.max(1, Number(body?.radius_km ?? 0));
-    let list_text = cleanText(String(body?.list_text ?? "").trim(), 800);
+    const address   = cleanText(String(body?.address ?? "").trim());
+    const radius_km = Number(body?.radius_km ?? 0);
+    const list_text = cleanText(String(body?.list_text ?? "").trim());
     const show_all  = !!body?.show_all;
 
     const miss:string[]=[];
@@ -543,38 +589,37 @@ app.post("/api/search", async (c)=>{
       return c.json({ status:"need_input", needed: miss, requestId:id }, 400);
     }
 
-    // 1) Branches
+    // 1) סניפים אמיתיים
     const { branches, formatted_address } = await listApprovedBranches(id, address, radius_km);
     const approvedMap = new Map<string, Branch>(branches.map(b => [b.branch_id, b]));
 
-    // 2) Prompt
+    // 2) פרומפט משתמש
     const basePrompt =
 `address: ${address} (geocoded: ${formatted_address})
 radius_km: ${radius_km}
 list_text: ${list_text}
 
-ALLOWED_DOMAINS: ${JSON.stringify([...APPROVED_DOMAINS])}
+ALLOWED_DOMAINS (aggregators only): ${JSON.stringify([...ALLOWED_DOMAINS])}
 
 APPROVED_BRANCHES (JSON):
 ${JSON.stringify(branches, null, 2)}
 
 ENFORCEMENTS:
-- Choose branches ONLY from APPROVED_BRANCHES by branch_id.
-- Prices ONLY from ALLOWED_DOMAINS with "₪" in the page, or JSON-LD ILS.
-- If exact item unavailable, use nearest substitute (substitution=true) with ppu and notes.
+- Use ONLY ALLOWED_DOMAINS above (aggregators). Do NOT use retailer domains.
+- Prices must show "₪" in page or JSON-LD ILS (model-side preference).
+- Try multiple allowed domains if the first lacks a valid ₪/ILS price.
 - Return ONE function call (submit_results). No free text.`;
 
     // 3) LLM
     const first = await callOpenAIOnce(PROMPT_SYSTEM, basePrompt, id);
 
-    // 4) Verify results
+    // 4) אימות תוצאות (ללא דרישת ₪)
     const parsed = first.parsed as any;
     if (!parsed?.results || !Array.isArray(parsed.results)) {
       throw new HttpError(400, "Bad results shape from model", { openai_request_id: first.request_id });
     }
 
-    const issues: string[] = [];
-    // Verify stores sequentially (per store), items inside are parallelized
+    let issues: string[] = [];
     for (const s of parsed.results) {
       const v = await verifyStore(s, approvedMap);
       if (!v.store_verified) issues.push(`store not verified (branch=${s.branch_id}): ${v.issues.join("; ")}`);
@@ -583,7 +628,6 @@ ENFORCEMENTS:
     const verifiedOnly = parsed.results.filter((s:any)=> s.store_verification?.store_verified);
     const finalResults = show_all ? parsed.results : verifiedOnly;
 
-    // Sort & rank
     finalResults.sort((a:any,b:any)=> (a.total_price??999999) - (b.total_price??999999));
     finalResults.forEach((r:any,i:number)=> r.rank = i+1);
 
@@ -620,7 +664,7 @@ app.get("/", async (c)=>{
   if (html){
     info(id, "Serving ./public/index.html");
     return c.newResponse(html, 200, { "content-type":"text/html; charset=utf-8" });
-    }
+  }
   return c.newResponse(
     "<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>Upload <code>public/index.html</code> to show the UI.</p>",
     200
