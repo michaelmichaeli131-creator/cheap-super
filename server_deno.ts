@@ -1,9 +1,9 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) — GPT-4.1 + Function Calling (stable) + full error debug
+// Deno + Hono + OpenAI Responses API (web_search) — GPT-4.1 + Function Calling + “evidence-only” policy
 //
 // ENV (before run):
 //   OPENAI_API_KEY=sk-...            (required)
-//   OPENAI_MODEL=gpt-4.1             (stable model)
+//   OPENAI_MODEL=gpt-4.1             (stable model with web_search)
 //   DEBUG=false                      (true for extra debug)
 //
 // Run locally:
@@ -57,45 +57,51 @@ function cleanText(s: string, maxLen = 400): string {
   return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
 }
 
-// ===== System Prompt =====
+// ===== System Prompt (STRICT “evidence-only”) =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
+
+HARD POLICY (DO NOT VIOLATE):
+- DO NOT FABRICATE prices or branches. Use ONLY information found on the public web during this call.
+- Retailer sources must be official Israeli chains (e.g., rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il), or reputable comparison sites that show explicit prices.
+- Every price you return MUST have a supporting product URL with "₪" or a structured price captured in the page. If not present, treat as estimate with low confidence and add notes.
+- Branches must be REAL branches. Include branch name and address as shown online, and prefer a branch product page or store locator URL for that specific branch/city. If uncertain, do not invent—downgrade confidence or exclude the store.
 
 INPUTS PROVIDED:
 - address (city/street/country)
 - radius_km (numeric)
 - list_text (free-form shopping list)
 
-TOOLS AVAILABLE:
-- web_search: use it to find current, real prices from real Israeli stores (retailer/product pages).
-  Prefer product/store pages over blogs/news.
+TOOLS:
+- web_search: use for live data. Issue focused bilingual queries (Heb/Eng) with brand + size + pack. Use site filters and synonyms:
+  Examples:
+    "מי עדן 6×1.5 ליטר מחיר site:rami-levy.co.il ₪"
+    "Mei Eden 6x1.5 price site:victoryonline.co.il ₪"
+    Include: "שישייה", "אריזת 6", "6*1.5", "6x1.5L".
+  If barcode/GTIN appears in snippets, search it too.
 
 TASK:
-1) Parse list_text into concrete items (name, quantity, brand if known, size when obvious).
-2) Use web_search to find realistic prices for those items (₪). Include product_url & source_domain for each line if available.
-3) Return 3–4 stores near the given address within the radius. If distance is unknown, estimate (in km).
-4) Sort stores by total_price ascending (cheapest → expensive).
-5) If a price is not explicitly found, estimate reasonably, set lower match_confidence (e.g., 0.4), and add "notes".
+1) Parse list_text into concrete items (name, quantity, brand if known, size).
+2) For each item, find pack_qty and size. If the exact pack isn't available, find the closest substitute (e.g., 12×0.5L instead of 6×1.5L), mark substitution=true, compute ppu (price per unit: L/kg), and explain in notes.
+3) For each basket line include: product_url, source_domain, source_title, observed_price_text (short), observed_at (ISO), in_stock (boolean), size, pack_qty, unit, unit_price, ppu, line_total, match_confidence, substitution, notes.
+4) Return 3–4 **real branches** near the given address within the radius. For each store include branch name and address from the web (or store-locator URL). If distance_km unknown, estimate.
+5) Rank stores by total_price ascending. Also include "coverage" = share of basket lines with non-estimated prices.
+6) Currency must be "₪". No zeros unless the page shows 0.
 
-IMPORTANT:
-- If you cannot find any valid Israeli store/product prices, still return a valid result object with results: [].
-- ABSOLUTELY NO free-form text; you MUST call the function tool submit_results with the final structured JSON only.
-
-HARD RULES:
-- Currency symbol must be "₪" for Israel.
-- No zeros unless page explicitly shows 0.
-- Focus ONLY on Israeli retail product/store pages with explicit prices (e.g., rami-levy.co.il, shufersal.co.il, victoryonline.co.il, yohananof.co.il, tivtaam.co.il, osherad.co.il).
+OUTPUT:
+- Return exactly ONE function call to submit_results with strict JSON. No free text.
+- If you cannot find reliable prices, return {"status":"ok","results":[]} with notes per store explaining why.
 `.trim();
 
-// ===== OpenAI Responses API call (Function Calling + web_search) =====
+// ===== OpenAI Responses API (Function Calling + web_search) =====
 async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
-  // Function tool schema
+  // Function tool schema — requires evidence and real branches
   const submitResultsFunction = {
     type: "function",
     name: "submit_results",
-    description: "Return the final price comparison JSON. Call this exactly once at the end.",
+    description: "Return the final price comparison JSON. Call exactly once at the end.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -108,34 +114,51 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
             type: "object",
             additionalProperties: false,
             required: [
-              "rank","store_name","address","distance_km",
-              "currency","total_price","basket","match_overall","notes"
+              "rank","store_name","branch_name","address","branch_url",
+              "distance_km","currency","total_price","coverage",
+              "basket","match_overall","notes"
             ],
             properties: {
               rank: { type: "integer" },
               store_name: { type: "string" },
-              address: { type: "string" },
+              branch_name: { type: "string" },      // e.g., "שופרסל דיל — חולון, סוקולוב"
+              address: { type: "string" },          // branch address as shown online
+              branch_url: { type: ["string","null"] }, // store locator or branch page
               distance_km: { type: "number" },
               currency: { type: "string" },
               total_price: { type: "number" },
+              coverage: { type: "number", minimum: 0, maximum: 1 },
               notes: { type: ["string","null"] },
               basket: {
                 type: "array",
+                minItems: 1,
                 items: {
                   type: "object",
                   additionalProperties: false,
                   required: [
-                    "name","brand","quantity","unit_price","line_total",
-                    "product_url","source_domain","match_confidence","substitution","notes"
+                    "name","brand","quantity",
+                    "size","pack_qty","unit",
+                    "unit_price","ppu","line_total",
+                    "product_url","source_domain","source_title",
+                    "observed_price_text","observed_at","in_stock",
+                    "match_confidence","substitution","notes"
                   ],
                   properties: {
                     name: { type: "string" },
                     brand: { type: ["string","null"] },
                     quantity: { type: "number" },
-                    unit_price: { type: "number" },
+                    size: { type: ["string","null"] },       // e.g., "1.5L"
+                    pack_qty: { type: ["number","null"] },   // e.g., 6
+                    unit: { type: ["string","null"] },       // "L","kg","g","ml"
+                    unit_price: { type: "number" },          // price for one pack or one unit as presented on page
+                    ppu: { type: ["number","null"] },        // price per liter/kg if derivable
                     line_total: { type: "number" },
                     product_url: { type: "string" },
                     source_domain: { type: "string" },
+                    source_title: { type: ["string","null"] },
+                    observed_price_text: { type: ["string","null"] },
+                    observed_at: { type: ["string","null"] }, // ISO datetime
+                    in_stock: { type: "boolean" },
                     match_confidence: { type: "number", minimum: 0, maximum: 1 },
                     substitution: { type: "boolean" },
                     notes: { type: ["string","null"] }
@@ -155,12 +178,13 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     instructions: systemPrompt,
     input: userPrompt,
     tools: [
-      { type: "web_search" },                        // built-in web search
-      submitResultsFunction                           // function tool for structured output
+      { type: "web_search" },                        // built-in web search (see docs)
+      submitResultsFunction
     ],
-    // Correct Responses API form to force a function:
+    // Force the model to return ONLY the function output:
+    // (Responses API tool-choice format)
     tool_choice: { type: "function", name: "submit_results" },
-    max_output_tokens: 1800
+    max_output_tokens: 2000
   };
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
@@ -195,22 +219,18 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
     info(id, "OpenAI outputs (types)", Array.isArray(json?.output) ? json.output.map((p:any)=>p?.type) : json?.output);
   }
 
-  // Parse function/tool call:
+  // Parse function/tool call (supports both shapes)
   const outputs = Array.isArray(json?.output) ? json.output : [];
 
-  // 1) Prefer explicit submit_results calls (function_call OR tool_call)
   let candidate = outputs.find((p:any)=>
     (p?.type === "function_call" && (p?.name === "submit_results" || p?.function?.name === "submit_results")) ||
     (p?.type === "tool_call"     && (p?.tool === "submit_results" || p?.function?.name === "submit_results"))
   );
-
-  // 2) If not found, but there's exactly one function/tool call — assume it's ours
   if (!candidate) {
     const calls = outputs.filter((p:any)=> p?.type === "function_call" || p?.type === "tool_call");
     if (calls.length === 1) candidate = calls[0];
   }
 
-  // 3) Extract arguments from any known shape
   let argsStr: string | null = null;
   if (candidate) {
     if (typeof candidate?.arguments === "string") argsStr = candidate.arguments;
@@ -218,7 +238,6 @@ async function callOpenAIResponses(systemPrompt: string, userPrompt: string, id:
   }
 
   if (!argsStr) {
-    // Last resort: try free text JSON (rare)
     const outputText = typeof json?.output_text === "string" ? json.output_text : "";
     const tryParsed = extractJson(outputText);
     if (!tryParsed) {
@@ -279,12 +298,10 @@ app.get("/api/llm_preview", async (c)=>{
 radius_km: ${radius_km}
 list_text: ${list_text}
 
-SEARCH SCOPE:
-- Only Israeli retailer/product pages with explicit prices.
-- Prefer store pages; ignore blogs/docs/dev sites.
-
-If you cannot find any valid store/product prices, return via function: {"status":"ok","results":[]}.
-Call submit_results exactly once with the final JSON.`;
+INSTRUCTIONS (recap):
+- Use web_search with bilingual queries (Heb/Eng), pack synonyms, and site filters for Israeli retailers.
+- Evidence only: every price must have a product URL with ₪ or structured price; otherwise estimate with notes & low confidence.
+- Return ONE function call (submit_results) with strict JSON only.`;
 
   return c.json({
     status:"ok",
@@ -318,11 +335,12 @@ radius_km: ${radius_km}
 list_text: ${list_text}
 
 INSTRUCTIONS:
-- Use web_search to collect real prices (₪) from Israeli retailers near the address.
-- Include product_url and source_domain for each line when available.
-- If a price is missing, estimate with lower confidence and add notes.
-- If you cannot find any valid store/product prices, return via function: {"status":"ok","results":[]}.
-- Call submit_results exactly once with the final JSON (no free text).`;
+- Use web_search to collect **real** prices (₪) from Israeli retailer product pages or reputable price-comparison sites ONLY.
+- Do NOT invent prices or branches. Include branch_name, address, and branch_url (locator or branch/product page).
+- For each line: include product_url, source_domain, source_title, observed_price_text, observed_at (ISO), in_stock.
+- If exact pack not found, return best substitute with substitution=true and compute ppu; explain in notes.
+- Rank by total_price; include coverage.
+- Return ONE function call to submit_results with strict JSON.`;
 
     const { parsed, raw, request_id } = await callOpenAIResponses(PROMPT_SYSTEM, userPrompt, id);
     const payload:any = { ...parsed, requestId:id, openai_request_id: request_id ?? undefined };
