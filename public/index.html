@@ -2,48 +2,61 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8" />
-<title>השוואת סל קניות AI</title>
+<title>השוואת סל קניות AI - מורחב</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-:root{ --ink:#0d1321; --muted:#6b7280; --brand:#2fb6ff; --bg:#f5f9ff; --card:#fff; --glass:#ffffffcc; --shadow:0 14px 34px rgba(15,50,90,.12) }
-*{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
-.landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%)}
-.landing-head{display:flex;align-items:center;justify-content:space-between}
-.brand-mini{display:flex;align-items:center;gap:10px;font-weight:900}
-.brand-mini .dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#76d2ff,#2fb6ff);box-shadow:0 6px 12px #2fb6ff55}
-.how{color:#075985;text-decoration:underline;font-weight:700}
-.landing-center{text-align:center;margin-top:8vh}
-.hero-title{font-size:clamp(22px,5.2vw,32px);line-height:1.15;margin:0}
-.hero-sub{color:var(--muted);margin:.5rem 0 1.1rem}
-.badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:1.1rem}
-.badge{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;box-shadow:0 8px 18px #0b3b6a12;font-weight:700}
-.hero-cta,.hero-ghost{width:100%;margin-top:.6rem}
-.screen{display:none}.screen.active{display:block}
-.page{padding:0 16px 110px}
-.box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px}
-.muted{color:var(--muted)}
-.input{display:flex;flex-direction:column;gap:8px}
-.input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0b3b6a0e;font-size:16px}
-.radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer}
-.row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb}
-.row+.row{margin-top:10px}.total{font-size:18px;font-weight:900}
-.cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7}
-.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px}
-.btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer}
-.btn-black{background:#111;color:#fff}.btn-ghost{background:#eaf6ff;color:#075985}
-.skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
-.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite}
-a{color:#075985}
-details>summary{cursor:pointer}
-.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700}
-pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;border-radius:12px;direction:ltr;overflow:auto;font-size:12px}
-.small{font-size:12px}
-.good{color:#047857;font-weight:800}
-.bad{color:#b91c1c;font-weight:800}
-.toggle{display:flex;align-items:center;gap:8px}
+:root{
+  --ink:#0d1321;
+  --muted:#6b7280;
+  --brand:#2fb6ff;
+  --bg:#f5f9ff;
+  --card:#fff;
+  --glass:#ffffffcc;
+  --shadow:0 14px 34px rgba(15,50,90,.12);
+  --success:#047857;
+  --error:#b91c1c;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden;}
+.screen{display:none}.screen.active{display:block;}
+.page{padding:0 16px 120px;}
+.box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px;margin-bottom:20px;}
+.muted{color:var(--muted);}
+.input{display:flex;flex-direction:column;gap:8px;}
+.input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0b3b6a0e;font-size:16px;}
+.radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
+.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer;transition:all 0.2s;}
+.btn-chip[data-active="1"]{background:var(--brand);color:#fff;}
+.row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb;margin-top:10px;}
+.total{font-size:18px;font-weight:900;}
+.cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7;}
+.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px;}
+.btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer;}
+.btn-black{background:#111;color:#fff;transition:all 0.2s;}
+.btn-black:hover{background:#333;}
+.btn-ghost{background:#eaf6ff;color:#075985;transition:all 0.2s;}
+.btn-ghost:hover{background:#cce6ff;}
+.landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%);}
+.landing-head{display:flex;align-items:center;justify-content:space-between;}
+.brand-mini{display:flex;align-items:center;gap:10px;font-weight:900;}
+.brand-mini .dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#76d2ff,#2fb6ff);box-shadow:0 6px 12px #2fb6ff55;}
+.how{color:#075985;text-decoration:underline;font-weight:700;}
+.landing-center{text-align:center;margin-top:8vh;}
+.hero-title{font-size:clamp(22px,5.2vw,32px);line-height:1.15;margin:0;}
+.hero-sub{color:var(--muted);margin:.5rem 0 1.1rem;}
+.badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:1.1rem;}
+.badge{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;box-shadow:0 8px 18px #0b3b6a12;font-weight:700;}
+.skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px;}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite;}
+@keyframes shimmer{0%{transform:translateX(-100%);}100%{transform:translateX(100%);}}
+a{color:#075985;}
+details>summary{cursor:pointer;}
+.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700;}
+.small{font-size:12px;}
+.good{color:var(--success);font-weight:800;}
+.bad{color:var(--error);font-weight:800;}
+.toggle{display:flex;align-items:center;gap:8px;margin-top:8px;}
 </style>
 </head>
 <body>
@@ -56,18 +69,14 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
       <div class="brand-mini"><div class="dot"></div><span>CartCompare <b>AI</b></span></div>
       <a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
     </header>
-
     <div class="landing-center">
-      <!-- === מלל משוחזר בדיוק כפי שביקשת === -->
       <h1 class="hero-title">מצא/י את סל הקניות הזול לידך</h1>
       <p class="hero-sub">מוצא את הזול במהירות באמצעות AI</p>
-
       <div class="badges">
         <span class="badge">⚡ חוסך זמן</span>
         <span class="badge">💸 מחיר הכי זול</span>
         <span class="badge">AI 🤖</span>
       </div>
-
       <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
       <button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
     </div>
@@ -94,13 +103,13 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
     <div class="box">
       <div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
       <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
-      <div class="radius-grid" style="margin-top:12px">
+      <div class="radius-grid">
         <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
       </div>
-      <div class="input" style="margin-top:12px">
+      <div class="input">
         <label class="muted" for="radius">או הזן/י ידנית</label>
         <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
       </div>
@@ -117,8 +126,7 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
       <div class="input" style="margin-top:12px">
         <textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 קוקה קולה 1.5 ל׳"></textarea>
       </div>
-
-      <div class="toggle" style="margin-top:8px">
+      <div class="toggle">
         <input type="checkbox" id="verifiedOnly" checked />
         <label for="verifiedOnly">הצג רק חנויות מאומתות</label>
       </div>
@@ -137,7 +145,6 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
       <div id="summary" class="muted" style="margin-top:6px"></div>
       <div id="results" style="margin-top:12px"></div>
       <div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none"></div>
-
       <div id="debugWrap" style="display:none;margin-top:12px">
         <details><summary>🔧 Debug</summary><pre id="debugJson" class="debug"></pre></details>
       </div>
@@ -150,7 +157,6 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
     <button id="back" class="btn btn-ghost" type="button">חזרה</button>
     <button id="next" class="btn btn-black" type="button">הבא</button>
   </div>
-</div>
 </div>
 
 <script>
@@ -253,34 +259,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const total = toPrice(r.total_price, r.currency || "₪");
     const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
     const cover = (typeof r.coverage === 'number') ? `${Math.round(r.coverage*100)}%` : '—';
-
-    const storeVer = r.store_verification || {};
-    const verified = !!storeVer.store_verified;
+    const verified = r.store_verification?.store_verified;
     const badge = verified ? `<span class="pill good">מאומת</span>` : `<span class="pill bad">לא מאומת</span>`;
-
-    const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
-      const unit = toPrice(b.unit_price, r.currency || "₪");
-      const line = toPrice(b.line_total, r.currency || "₪");
-      const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
-      const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}${b.observed_price_text? ' • '+esc(b.observed_price_text): ''}</div>` : '';
-
-      const v = b.verification || {};
-      const vline = `<div class="small ${v.notes==='OK'?'good':'bad'}">
-        אימות: דומיין ${v.domain_ok?'✅':'❌'} • סטטוס ${v.http_status||0} • ₪/${v.price_source||'-'} ${v.found_shekel?'✅':'❌'} • התאמת מחיר ${v.price_matches?'✅':'❌'} • התאמת שם ~${Math.round((v.name_match||0)*100)}%
-      </div>`;
-
-      const sub = b.substitution ? ` <span class="pill">תחליף</span>` : '';
-
-      return `
-        <div class="row">
-          <div>
-            <div><strong>${esc(b.name||'')}</strong>${brand}${sub}</div>
-            <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • נפח/גודל: ${esc(b.size||'-')} • יח': ${esc(b.pack_qty??'-')}</div>
-            ${src}${vline}
-          </div>
-          <div class="total">${line}</div>
-        </div>`;
-    }).join('') : '';
+    const basketRows = Array.isArray(r.basket) ? r.basket.map(renderBasketItem.bind(null,r.currency)).join('') : '';
 
     const hdr = `
     <div class="row">
@@ -297,15 +278,35 @@ document.addEventListener('DOMContentLoaded', () => {
     return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
   }
 
-  function renderSkeleton(){ resultsEl.innerHTML=''; loadingEl.style.display='block'; }
-  function row(title, msg){ return `<div class="row"><div><strong>${esc(title)}</strong><div class="muted" style="font-size:12px">${esc(msg)}</div></div></div>`; }
-  function shake(el){ el.style.borderColor='#ffb4b4'; el.animate([{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],{duration:260}); setTimeout(()=>el.style.borderColor='#e6edf7',320); }
-  function esc(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
-  function escAttr(s){return String(s??'').replace(/"/g,'&quot;')}
-  function toPrice(v, currency){
-    if (typeof v === "number") return v.toFixed(2)+" "+currency;
-    if (typeof v === "string" && v.trim()) return v.includes("₪") ? v : (v+" "+currency);
-    return "—";
+  function renderBasketItem(currency,b){
+    const unit = toPrice(b.unit_price, currency);
+    const line = toPrice(b.line_total, currency);
+    const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
+    const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}${b.observed_price_text? ' • '+esc(b.observed_price_text): ''}</div>` : '';
+    const v = b.verification || {};
+    const vline = `<div class="small ${v.notes==='OK'?'good':'bad'}">
+      אימות: דומיין ${v.domain_ok?'✅':'❌'} • סטטוס ${v.http_status||0} • ₪/${v.price_source||'-'} ${v.found_shekel?'✅':'❌'} • התאמת מחיר ${v.price_matches?'✅':'❌'} • התאמת שם ~${Math.round((v.name_match||0)*100)}%</div>`;
+    return `<div class="row"><div>${esc(b.name)}${brand}${src}${isDebug?vline:''}</div><div>${line}</div></div>`;
+  }
+
+  function toPrice(num,cur="₪"){
+    if(num==null) return '—';
+    return `${cur} ${Number(num).toFixed(2)}`;
+  }
+
+  function esc(s){return String(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function escAttr(s){return String(s||'').replace(/"/g,'&quot;');}
+
+  function renderSkeleton(){
+    resultsEl.innerHTML = '';
+    loadingEl.style.display = 'block';
+  }
+
+  function shake(el){
+    el.style.transition = 'transform 0.15s';
+    el.style.transform='translateX(8px)';
+    setTimeout(()=>el.style.transform='translateX(-8px)',150);
+    setTimeout(()=>el.style.transform='translateX(0)',300);
   }
 });
 </script>
