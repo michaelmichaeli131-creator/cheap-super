@@ -8,7 +8,7 @@
 :root{ --ink:#0d1321; --muted:#6b7280; --brand:#2fb6ff; --bg:#f5f9ff; --card:#fff; --glass:#ffffffcc; --shadow:0 14px 34px rgba(15,50,90,.12) }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-.app{max-width:440px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
 .landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%)}
 .landing-head{display:flex;align-items:center;justify-content:space-between}
 .brand-mini{display:flex;align-items:center;gap:10px;font-weight:900}
@@ -31,7 +31,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family
 .row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb}
 .row+.row{margin-top:10px}.total{font-size:18px;font-weight:900}
 .cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7}
-.cta .inner{max-width:440px;margin:0 auto;display:flex;gap:10px;padding:12px 16px}
+.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px}
 .btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer}
 .btn-black{background:#111;color:#fff}.btn-ghost{background:#eaf6ff;color:#075985}
 .skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
@@ -40,6 +40,14 @@ a{color:#075985}
 details>summary{cursor:pointer}
 .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700}
 pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;border-radius:12px;direction:ltr;overflow:auto;font-size:12px}
+.small{font-size:12px}
+.good{color:#047857;font-weight:800}
+.bad{color:#b91c1c;font-weight:800}
+.toggle{display:flex;align-items:center;gap:8px}
+/* simple modal */
+.modal{position:fixed;inset:0;background:#00000066;display:none;align-items:center;justify-content:center;padding:16px}
+.modal.active{display:flex}
+.modal .card{max-width:520px;background:#fff;border-radius:16px;box-shadow:var(--shadow);padding:16px}
 </style>
 </head>
 <body>
@@ -50,17 +58,17 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
   <div class="landing">
     <header class="landing-head">
       <div class="brand-mini"><div class="dot"></div><span>CartCompare <b>AI</b></span></div>
-      <a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
+      <button aria-haspopup="dialog" class="how" id="howLink">איך זה עובד?</button>
     </header>
 
     <div class="landing-center">
-      <h1 class="hero-title">מצא/י את סל הקניות הזול לידך</h1>
-      <p class="hero-sub">מוצא את הזול במהירות באמצעות AI</p>
+      <h1 class="hero-title">מצא/י את סל הקניות הזול והמאומת לידך</h1>
+      <p class="hero-sub">מחירים מסומכים בקישורים חיים (₪) וסניפים אמיתיים</p>
 
       <div class="badges">
-        <span class="badge">⚡ חוסך זמן</span>
-        <span class="badge">💸 מחיר הכי זול</span>
-        <span class="badge">🤖 OpenAI (Web) — מומלץ</span>
+        <span class="badge">✅ אימות בצד השרת</span>
+        <span class="badge">🧭 סניפים אמיתיים</span>
+        <span class="badge">🧠 web_search</span>
       </div>
 
       <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
@@ -74,10 +82,10 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
   <div class="page">
     <div class="box">
       <div style="font-weight:800;font-size:20px">מה הכתובת שלך?</div>
-      <div class="muted" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
+      <div class="muted" id="addressHelp" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
       <div class="input" style="margin-top:12px">
         <label class="muted" for="address">כתובת / עיר</label>
-        <input id="address" placeholder="למשל: חולון, סוקולוב 10" />
+        <input id="address" aria-describedby="addressHelp" placeholder="למשל: חולון, סוקולוב 10" />
       </div>
     </div>
   </div>
@@ -88,7 +96,7 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
   <div class="page">
     <div class="box">
       <div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
-      <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
+      <div class="muted" id="radiusHelp" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
       <div class="radius-grid" style="margin-top:12px">
         <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
@@ -97,7 +105,7 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
       </div>
       <div class="input" style="margin-top:12px">
         <label class="muted" for="radius">או הזן/י ידנית</label>
-        <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
+        <input id="radius" type="number" min="1" step="0.5" placeholder="5" aria-describedby="radiusHelp" />
       </div>
     </div>
   </div>
@@ -108,9 +116,14 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
   <div class="page">
     <div class="box">
       <div style="font-weight:800;font-size:20px">מה תרצה לקנות?</div>
-      <div class="muted" style="margin-top:6px">אפשר טקסט חופשי (לא חייב פסיקים). ה-AI יבין מוצרים וכמויות.</div>
+      <div class="muted" id="listHelp" style="margin-top:6px">טקסט חופשי. ה-AI יבין מוצרים וכמויות.</div>
       <div class="input" style="margin-top:12px">
-        <textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 בירות קלסברג"></textarea>
+        <textarea id="list" rows="5" aria-describedby="listHelp" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 קוקה קולה 1.5 ל׳"></textarea>
+      </div>
+
+      <div class="toggle" style="margin-top:8px">
+        <input type="checkbox" id="verifiedOnly" checked />
+        <label for="verifiedOnly">הצג רק חנויות מאומתות</label>
       </div>
     </div>
   </div>
@@ -122,25 +135,41 @@ pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;bor
     <div class="box">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="font-weight:800;font-size:20px">התוצאות</div>
-        <span class="pill">OpenAI (Web)</span>
+        <span class="pill">OpenAI web_search</span>
       </div>
       <div id="summary" class="muted" style="margin-top:6px"></div>
-      <div id="results" style="margin-top:12px"></div>
-      <div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none"></div>
+      <div id="results" style="margin-top:12px" aria-live="polite"></div>
+      <div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none" aria-live="polite"></div>
+
       <div id="debugWrap" style="display:none;margin-top:12px">
-        <details><summary>🔧 Debug JSON</summary><pre id="debugJson" class="debug"></pre></details>
+        <details><summary>🔧 Debug</summary><pre id="debugJson" class="debug"></pre></details>
       </div>
     </div>
   </div>
 </section>
 
-<!-- CTA -->
 <div class="cta">
   <div class="inner">
     <button id="back" class="btn btn-ghost" type="button">חזרה</button>
     <button id="next" class="btn btn-black" type="button">הבא</button>
   </div>
 </div>
+</div>
+
+<!-- Modal: How it works -->
+<div id="howModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="howTitle">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 id="howTitle" style="margin:0">איך זה עובד?</h3>
+      <button id="howClose" class="btn btn-ghost" type="button" aria-label="סגור">סגור</button>
+    </div>
+    <ol class="small" style="margin-top:8px">
+      <li>את/ה מזין/ה כתובת, רדיוס ורשימת קניות.</li>
+      <li>מקבלים סניפים אמיתיים מסביב לכתובת (Google Places).</li>
+      <li>ה-AI מחפש מחירים רק בדומיינים מאושרים (₪/ILS) ומחזיר סל מובנה.</li>
+      <li>השרת מאמת כל פריט (₪/ILS בדף, סטטוס 200, התאמות) ומציג רק מה שעבר.</li>
+    </ol>
+  </div>
 </div>
 
 <script>
@@ -155,6 +184,7 @@ const gpsSoon = document.getElementById('gpsSoon');
 const addressEl = document.getElementById('address');
 const radiusEl = document.getElementById('radius');
 const listEl = document.getElementById('list');
+const verifiedOnlyEl = document.getElementById('verifiedOnly');
 
 const resultsEl = document.getElementById('results');
 const loadingEl = document.getElementById('loading');
@@ -163,9 +193,12 @@ const debugWrap = document.getElementById('debugWrap');
 const debugJson = document.getElementById('debugJson');
 const isDebug = new URLSearchParams(location.search).get('debug') === '1';
 
+const howModal = document.getElementById('howModal');
+const howClose = document.getElementById('howClose');
+
 function goto(n){
   step = Math.max(0, Math.min(4, n));
-  screens.forEach((s,i)=> s?.classList.toggle('active', i===step));
+  screens.forEach((s,i)=> s.classList.toggle('active', i===step));
   btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
   btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -173,19 +206,24 @@ function goto(n){
 goto(0);
 
 startBtn?.addEventListener('click', ()=> goto(1));
-howLink?.addEventListener('click', ()=> goto(1));
+howLink?.addEventListener('click', ()=> { howModal.classList.add('active'); });
+howClose?.addEventListener('click', ()=> { howModal.classList.remove('active'); });
+howModal?.addEventListener('click', (e)=>{ if(e.target===howModal) howModal.classList.remove('active'); });
+
 gpsSoon?.addEventListener('click', ()=> alert('שימוש ב-GPS יתווסף בקרוב 😊'));
 
 document.querySelectorAll('[data-radius]').forEach(b=>{
   b.addEventListener('click', ()=>{
-    document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
-    b.dataset.active="1";
-    radiusEl.value = b.getAttribute('data-radius');
+    setRadius(b.getAttribute('data-radius'));
     goto(step+1);
   });
 });
 
 btnBack.addEventListener('click', ()=>{ if(step===0){ return; } goto(step-1); });
+
+// Keyboard UX
+[addressEl, radiusEl].forEach(el=> el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ btnNext.click(); }}));
+listEl.addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey) && e.key==='Enter'){ btnNext.click(); }});
 
 btnNext.addEventListener('click', async ()=>{
   if(step===1){ if(!addressEl.value.trim()) return shake(addressEl); return goto(step+1); }
@@ -193,7 +231,7 @@ btnNext.addEventListener('click', async ()=>{
   if(step===3){ if(!listEl.value.trim()) return shake(listEl); return goto(step+1); }
   if(step<4) return goto(step+1);
 
-  // Run search (OpenAI Web)
+  // Run search
   renderSkeleton();
   debugWrap.style.display = isDebug ? 'block' : 'none';
   debugJson.textContent = '';
@@ -201,67 +239,45 @@ btnNext.addEventListener('click', async ()=>{
   const payload = {
     address: addressEl.value.trim(),
     radius_km: Number(radiusEl.value || 5),
-    list_text: listEl.value.trim()
+    list_text: listEl.value.trim(),
+    show_all: !verifiedOnlyEl.checked ? true : false,
+    include_debug: isDebug
   };
 
-  summaryEl.textContent =
-    `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • מוצרים: ${payload.list_text.split(/\s+/).length} מילים`;
+  summaryEl.textContent = `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • פריטים: ${countItems(payload.list_text)}`;
 
   try{
-    const res = await fetch('/api/search?provider=openai', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
-    });
+    const res = await apiSearch(payload);
     const data = await res.json();
 
     loadingEl.style.display = 'none';
     if (isDebug) debugJson.textContent = JSON.stringify(data, null, 2);
 
     if(!res.ok){
-      resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
+      const map = {
+        400: 'קלט לא תקין. נסו לדייק כתובת/רשימה.',
+        429: 'עומס זמני. נסו שוב בעוד דקה.',
+        502: 'שגיאה מול ספק חיצוני. נסו שוב.',
+        500: 'שגיאה בשרת. נסו שוב.'
+      };
+      const msg = map[res.status] || (data && data.message) || 'שגיאת שרת לא צפויה.';
+      resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, msg);
       console.error("API error", data);
       return;
     }
-    if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
-      resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
-      if (data.debug) console.warn("DEBUG", data.debug);
+
+    if (data.status === 'need_input' && Array.isArray(data.needed)){
+      resultsEl.innerHTML = row('קלט חסר', 'חסר מידע: ' + data.needed.join(', '));
       return;
     }
 
-    resultsEl.innerHTML = data.results.map(r=>{
-      const total = toPrice(r.total_price, r.currency || "₪");
-      const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
+    if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
+      resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
+      return;
+    }
 
-      const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
-        const line = toPrice(b.line_total, r.currency || "₪");
-        const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
-        const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}</div>` : '';
-        const notes = b.notes ? `<div class="muted">${esc(b.notes)}</div>` : '';
-        const conf = (typeof b.match_confidence === 'number') ? `${Math.round(b.match_confidence*100)}%` : '—';
-        return `
-        <div class="row">
-          <div>
-            <div><strong>${esc(b.name||'')}</strong>${brand}</div>
-            <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • דיוק: ${conf}</div>
-            ${src}${notes}
-          </div>
-          <div class="total">${line}</div>
-        </div>`;
-      }).join('') : '';
-
-      const hdr = `
-      <div class="row">
-        <div>
-          <div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong></div>
-          <div class="muted" style="font-size:12px">${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo}</div>
-          ${r.notes ? `<div class="muted">${esc(r.notes)}</div>` : ''}
-        </div>
-        <div class="total">${total}</div>
-      </div>
-      `;
-
-      return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
-    }).join('');
+    resultsEl.innerHTML = data.results.map(renderStore).join('');
+    focusResults();
 
   }catch(err){
     loadingEl.style.display = 'none';
@@ -269,6 +285,69 @@ btnNext.addEventListener('click', async ()=>{
     console.error("Network error", err);
   }
 });
+
+// ===== helpers =====
+let currentAbort;
+async function apiSearch(payload){
+  if (currentAbort) currentAbort.abort();
+  currentAbort = new AbortController();
+  const t = setTimeout(()=> currentAbort.abort(), 30000);
+  try{
+    const res = await fetch('/api/search', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload), signal: currentAbort.signal
+    });
+    clearTimeout(t); return res;
+  } finally { clearTimeout(t); }
+}
+
+function renderStore(r){
+  const total = toPrice(r.total_price, r.currency || "₪");
+  const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
+  const cover = (typeof r.coverage === 'number') ? `${Math.round(r.coverage*100)}%` : '—';
+
+  const storeVer = r.store_verification || {};
+  const verified = !!storeVer.store_verified;
+  const badge = verified ? `<span class="pill good">מאומת</span>` : `<span class="pill bad">לא מאומת</span>`;
+
+  const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
+    const unit = toPrice(b.unit_price, r.currency || "₪");
+    const line = toPrice(b.line_total, r.currency || "₪");
+    const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
+    const src = b.product_url ? `<div class="muted"><a href="${escAttr(safeUrl(b.product_url))}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}${b.observed_price_text? ' • '+esc(b.observed_price_text): ''}</div>` : '';
+
+    const v = b.verification || {};
+    const vline = `<div class="small ${v.notes==='OK'?'good':'bad'}">
+      אימות: דומיין ${v.domain_ok?'✅':'❌'} • סטטוס ${v.http_status||0} • ₪/${v.price_source||'-'} ${v.found_shekel?'✅':'❌'} • התאמת מחיר ${v.price_matches?'✅':'❌'} • התאמת שם ~${Math.round((v.name_match||0)*100)}%
+    </div>`;
+
+    const sub = b.substitution ? ` <span class="pill">תחליף</span>` : '';
+
+    return `
+      <div class="row">
+        <div>
+          <div><strong>${esc(b.name||'')}</strong>${brand}${sub}</div>
+          <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • נפח/גודל: ${esc(b.size||'-')} • יח': ${esc(b.pack_qty??'-')}</div>
+          ${src}${vline}
+        </div>
+        <div class="total">${line}</div>
+      </div>`;
+  }).join('') : '';
+
+  const hdr = `
+  <div class="row">
+    <div>
+      <div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong> ${badge}</div>
+      <div class="muted small">${esc(r.branch_name||'')} • ${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo} • כיסוי ${cover}</div>
+      ${r.branch_url ? `<div class="small"><a href="${escAttr(safeUrl(r.branch_url))}" target="_blank" rel="noopener">דף הסניף / מפות</a></div>` : ''}
+      ${r.notes ? `<div class="muted small">${esc(r.notes)}</div>` : ''}
+    </div>
+    <div class="total">${total}</div>
+  </div>
+  `;
+
+  return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
+}
 
 function renderSkeleton(){ resultsEl.innerHTML=''; loadingEl.style.display='block'; }
 function row(title, msg){ return `<div class="row"><div><strong>${esc(title)}</strong><div class="muted" style="font-size:12px">${esc(msg)}</div></div></div>`; }
@@ -280,6 +359,20 @@ function toPrice(v, currency){
   if (typeof v === "string" && v.trim()) return v.includes("₪") ? v : (v+" "+currency);
   return "—";
 }
-</script>
-</body>
-</html>
+function countItems(list){
+  return list.split(/\n|,/).map(s=>s.trim()).filter(Boolean).length;
+}
+function focusResults(){ resultsEl.setAttribute('tabindex','-1'); resultsEl.focus(); }
+function setRadius(val){
+  const v = Math.max(1, Number(val)||5);
+  radiusEl.value = v;
+  document.querySelectorAll('[data-radius]').forEach(x=>{
+    x.dataset.active = (Number(x.dataset.radius)===v) ? "1":"0";
+  });
+}
+function safeUrl(u){
+  try { const url = new URL(u, location.origin); if (!/^https?:$/.test(url.protocol)) return '#'; return url.href; } catch { return '#'; }
+}
+
+// Local Storage (state)
+const KEY='cartcompa
