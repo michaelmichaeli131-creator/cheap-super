@@ -1,8 +1,9 @@
 // server_deno.ts
 // Deno + Hono + OpenAI Responses API (web_search) + Google Places + Zyte Auto-Extraction + Retailer Search Fallback
 // מצב: משתמשים ב-Zyte לכל פריט (ברירת מחדל), עם קאשינג, timeouts+retries, ו-fallback לחיפוש/קטגוריה באתר.
+// דרישות ENV: OPENAI_API_KEY, GOOGLE_PLACES_API_KEY, ZYTE_API_KEY
 
-// (אופציונלי) טען .env מקומית
+// (אופציונלי) טעינת .env מקומית
 import "jsr:@std/dotenv/load";
 
 import { Hono } from "npm:hono";
@@ -26,7 +27,7 @@ const OPENAI_TIMEOUT_MS        = Number(Deno.env.get("OPENAI_TIMEOUT_MS") || 600
 const RETRY_ATTEMPTS           = Math.max(1, Number(Deno.env.get("RETRY_ATTEMPTS") || 3));
 const RETRY_BASE_MS            = Math.max(200, Number(Deno.env.get("RETRY_BASE_MS") || 600));
 
-// Domains mode: both (retailers + aggregators) כברירת מחדל
+// Domains mode: both (retailers + aggregators)
 const ALLOWED_MODE = (Deno.env.get("ALLOWED_DOMAINS_MODE") || "both").toLowerCase(); // "aggregators" | "retailers" | "both"
 const RETAILER_DOMAINS = [
   "shufersal.co.il","rami-levy.co.il","victoryonline.co.il",
@@ -227,7 +228,7 @@ async function listApprovedBranches(id:string, address:string, radius_km:number)
   return { center, formatted_address: geo.formatted, branches: out.slice(0, 12) };
 }
 
-// ===== Prompt (מעדיף חיפוש/קטגוריות; אין דרישת ₪ — נסתמך על Zyte) =====
+// ===== Prompt (עדיפות חיפוש/קטגוריות; בלי דרישת ₪ — נשען על Zyte) =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
@@ -440,17 +441,22 @@ async function extractProductWithZyte(url: string): Promise<ZyteProduct | null> 
   if (cached) return cached;
 
   zyteCalls++;
+
+  // Basic Auth (username = API key, password = empty)
+  const basic = "Basic " + btoa(`${ZYTE_API_KEY}:`);
+
   const doCall = async () => {
     const r = await fetch("https://api.zyte.com/v1/extract", {
       method: "POST",
       headers: {
-        "authorization": `Bearer ${ZYTE_API_KEY}`,
+        "authorization": basic,
         "content-type": "application/json",
         "user-agent": UA,
       },
       body: JSON.stringify({
         url,
-        productOptions: { extractFrom: "browser" }
+        product: true,
+        geolocation: { country: "IL" }
       }),
     }).catch(e => { throw new HttpError(502, `Zyte fetch error: ${e?.message || String(e)}`); });
 
@@ -535,7 +541,7 @@ async function searchAndPickWithZyte(domain: string, it: any): Promise<ZyteProdu
   return best?.zp ?? null;
 }
 
-// ===== (Optional) HTML fetch helpers – נשארו לגיבוי אם תרצה בעתיד =====
+// ===== (Optional) HTML fetch helpers – לגיבוי עתידי =====
 async function fetchText(url:string){
   const res = await retry(()=> fetchWithTimeout(url, {
     redirect: "follow",
@@ -581,7 +587,7 @@ function extractPriceFromHtml(htmlRaw:string){
   return { value: null as number|null, source: "none" as const };
 }
 
-// ===== Verification (Zyte on every request + site-search fallback) =====
+// ===== Verification (Zyte בכל בקשה + fallback חיפוש אתר) =====
 async function verifyItem(it:any){
   const res:any = {
     domain_ok:false, http_status:200, price_extracted:null as number|null, price_source:"none",
