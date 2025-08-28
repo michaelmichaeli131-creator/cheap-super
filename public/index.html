@@ -2,61 +2,49 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8" />
-<title>השוואת סל קניות AI - מורחב</title>
+<title>השוואת סל קניות AI</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-:root{
-  --ink:#0d1321;
-  --muted:#6b7280;
-  --brand:#2fb6ff;
-  --bg:#f5f9ff;
-  --card:#fff;
-  --glass:#ffffffcc;
-  --shadow:0 14px 34px rgba(15,50,90,.12);
-  --success:#047857;
-  --error:#b91c1c;
-}
-*{box-sizing:border-box;}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
-.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden;}
-.screen{display:none}.screen.active{display:block;}
-.page{padding:0 16px 120px;}
-.box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px;margin-bottom:20px;}
-.muted{color:var(--muted);}
-.input{display:flex;flex-direction:column;gap:8px;}
-.input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0b3b6a0e;font-size:16px;}
-.radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
-.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer;transition:all 0.2s;}
-.btn-chip[data-active="1"]{background:var(--brand);color:#fff;}
-.row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb;margin-top:10px;}
-.total{font-size:18px;font-weight:900;}
-.cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7;}
-.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px;}
-.btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer;}
-.btn-black{background:#111;color:#fff;transition:all 0.2s;}
-.btn-black:hover{background:#333;}
-.btn-ghost{background:#eaf6ff;color:#075985;transition:all 0.2s;}
-.btn-ghost:hover{background:#cce6ff;}
-.landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%);}
-.landing-head{display:flex;align-items:center;justify-content:space-between;}
-.brand-mini{display:flex;align-items:center;gap:10px;font-weight:900;}
-.brand-mini .dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#76d2ff,#2fb6ff);box-shadow:0 6px 12px #2fb6ff55;}
-.how{color:#075985;text-decoration:underline;font-weight:700;}
-.landing-center{text-align:center;margin-top:8vh;}
-.hero-title{font-size:clamp(22px,5.2vw,32px);line-height:1.15;margin:0;}
-.hero-sub{color:var(--muted);margin:.5rem 0 1.1rem;}
-.badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:1.1rem;}
-.badge{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;box-shadow:0 8px 18px #0b3b6a12;font-weight:700;}
-.skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px;}
-.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite;}
-@keyframes shimmer{0%{transform:translateX(-100%);}100%{transform:translateX(100%);}}
-a{color:#075985;}
-details>summary{cursor:pointer;}
-.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700;}
-.small{font-size:12px;}
-.good{color:var(--success);font-weight:800;}
-.bad{color:var(--error);font-weight:800;}
-.toggle{display:flex;align-items:center;gap:8px;margin-top:8px;}
+:root{ --ink:#0d1321; --muted:#6b7280; --brand:#2fb6ff; --bg:#f5f9ff; --card:#fff; --glass:#ffffffcc; --shadow:0 14px 34px rgba(15,50,90,.12) }
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+.landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%)}
+.landing-head{display:flex;align-items:center;justify-content:space-between}
+.brand-mini{display:flex;align-items:center;gap:10px;font-weight:900}
+.brand-mini .dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#76d2ff,#2fb6ff);box-shadow:0 6px 12px #2fb6ff55}
+.how{color:#075985;text-decoration:underline;font-weight:700}
+.landing-center{text-align:center;margin-top:8vh}
+.hero-title{font-size:clamp(22px,5.2vw,32px);line-height:1.15;margin:0}
+.hero-sub{color:var(--muted);margin:.5rem 0 1.1rem}
+.badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:1.1rem}
+.badge{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;box-shadow:0 8px 18px #0b3b6a12;font-weight:700}
+.hero-cta,.hero-ghost{width:100%;margin-top:.6rem}
+.screen{display:none}.screen.active{display:block}
+.page{padding:0 16px 110px}
+.box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px}
+.muted{color:var(--muted)}
+.input{display:flex;flex-direction:column;gap:8px}
+.input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0eedf7a0;font-size:16px}
+.radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer}
+.row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb}
+.row+.row{margin-top:10px}.total{font-size:18px;font-weight:900}
+.cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7}
+.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px}
+.btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer}
+.btn-black{background:#111;color:#fff}.btn-ghost{background:#eaf6ff;color:#075985}
+.skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite}
+a{color:#075985}
+details>summary{cursor:pointer}
+.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700}
+pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;border-radius:12px;direction:ltr;overflow:auto;font-size:12px}
+.small{font-size:12px}
+.good{color:#047857;font-weight:800}
+.bad{color:#b91c1c;font-weight:800}
+.toggle{display:flex;align-items:center;gap:8px}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
 </style>
 </head>
 <body>
@@ -103,13 +91,13 @@ details>summary{cursor:pointer;}
     <div class="box">
       <div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
       <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
-      <div class="radius-grid">
+      <div class="radius-grid" style="margin-top:12px">
         <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
         <button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
       </div>
-      <div class="input">
+      <div class="input" style="margin-top:12px">
         <label class="muted" for="radius">או הזן/י ידנית</label>
         <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
       </div>
@@ -126,7 +114,7 @@ details>summary{cursor:pointer;}
       <div class="input" style="margin-top:12px">
         <textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 קוקה קולה 1.5 ל׳"></textarea>
       </div>
-      <div class="toggle">
+      <div class="toggle" style="margin-top:8px">
         <input type="checkbox" id="verifiedOnly" checked />
         <label for="verifiedOnly">הצג רק חנויות מאומתות</label>
       </div>
@@ -140,7 +128,7 @@ details>summary{cursor:pointer;}
     <div class="box">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="font-weight:800;font-size:20px">התוצאות</div>
-        <span class="pill">OpenAI web_search</span>
+        <span class="pill">Price-compare Deno</span>
       </div>
       <div id="summary" class="muted" style="margin-top:6px"></div>
       <div id="results" style="margin-top:12px"></div>
@@ -157,6 +145,7 @@ details>summary{cursor:pointer;}
     <button id="back" class="btn btn-ghost" type="button">חזרה</button>
     <button id="next" class="btn btn-black" type="button">הבא</button>
   </div>
+</div>
 </div>
 
 <script>
@@ -212,102 +201,65 @@ document.addEventListener('DOMContentLoaded', () => {
     if(step<4) return goto(step+1);
 
     // Run search
-    renderSkeleton();
+    runSearch();
+  });
+
+  function shake(el){ el.style.borderColor='#ffb4b4'; el.animate([{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],{duration:260}); setTimeout(()=>el.style.borderColor='#e6edf7',320); }
+
+  async function runSearch() {
+    const query = encodeURIComponent(listEl.value.trim());
+    const city = encodeURIComponent(addressEl.value.trim());
+
+    summaryEl.textContent = `מחפש "${listEl.value}" ב-${addressEl.value}...`;
+    resultsEl.innerHTML = '';
+    loadingEl.style.display = 'block';
     debugWrap.style.display = isDebug ? 'block' : 'none';
     debugJson.textContent = '';
 
-    const payload = {
-      address: addressEl.value.trim(),
-      radius_km: Number(radiusEl.value || 5),
-      list_text: listEl.value.trim(),
-      show_all: !verifiedOnlyEl.checked ? true : false,
-      include_debug: isDebug
-    };
-
-    summaryEl.textContent = `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • מוצרים: ${payload.list_text.split(/\s+/).length} מילים`;
-
-    try{
-      const res = await fetch('/api/search', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(payload)
-      });
+    try {
+      const res = await fetch(`/compare?q=${query}&city=${city}`);
       const data = await res.json();
-
       loadingEl.style.display = 'none';
-      if (isDebug) debugJson.textContent = JSON.stringify(data, null, 2);
+      if(isDebug) debugJson.textContent = JSON.stringify(data,null,2);
 
-      if(!res.ok){
-        resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
-        console.error("API error", data);
-        return;
-      }
-      if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
-        resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
+      if(!Array.isArray(data.results) || data.results.length===0){
+        resultsEl.innerHTML = `<div class="row"><div><strong>לא נמצאו תוצאות</strong></div></div>`;
         return;
       }
 
-      resultsEl.innerHTML = data.results.map(renderStore).join('');
+      resultsEl.innerHTML = data.results.map(r=>{
+        const total = r.total_price ? r.total_price.toFixed(2)+' ₪' : '—';
+        const verified = r.store_verified ? `<span class="pill good">מאומת</span>` : `<span class="pill bad">לא מאומת</span>`;
+        const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
+          const line = b.line_total ? b.line_total.toFixed(2)+' ₪' : '—';
+          return `<div class="row">
+            <div>
+              <div><strong>${b.name}</strong> ${b.brand? '• '+b.brand : ''}</div>
+              <div class="muted small">כמות: ${b.quantity || '-'} • נפח: ${b.size || '-'} • יח': ${b.pack_qty || '-'}</div>
+            </div>
+            <div class="total">${line}</div>
+          </div>`;
+        }).join('') : '';
 
-    }catch(err){
+        return `
+          <div class="row">
+            <div>
+              <div><strong>${r.store_name}</strong> ${verified}</div>
+              <div class="muted small">${r.address || ''} • מרחק: ${r.distance_km || '-'} ק״מ</div>
+            </div>
+            <div class="total">${total}</div>
+          </div>
+          <details class="box" style="margin-top:10px"><summary>פירוט סל</summary>${basketRows}</details>
+        `;
+      }).join('');
+
+    } catch(err) {
       loadingEl.style.display = 'none';
-      resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
-      console.error("Network error", err);
+      resultsEl.innerHTML = `<div class="row"><div><strong>שגיאת רשת</strong><div class="muted small">${err.message||String(err)}</div></div></div>`;
+      console.error(err);
     }
-  });
-
-  function renderStore(r){
-    const total = toPrice(r.total_price, r.currency || "₪");
-    const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
-    const cover = (typeof r.coverage === 'number') ? `${Math.round(r.coverage*100)}%` : '—';
-    const verified = r.store_verification?.store_verified;
-    const badge = verified ? `<span class="pill good">מאומת</span>` : `<span class="pill bad">לא מאומת</span>`;
-    const basketRows = Array.isArray(r.basket) ? r.basket.map(renderBasketItem.bind(null,r.currency)).join('') : '';
-
-    const hdr = `
-    <div class="row">
-      <div>
-        <div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong> ${badge}</div>
-        <div class="muted small">${esc(r.branch_name||'')} • ${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo} • כיסוי ${cover}</div>
-        ${r.branch_url ? `<div class="small"><a href="${escAttr(r.branch_url)}" target="_blank" rel="noopener">דף הסניף / מפות</a></div>` : ''}
-        ${r.notes ? `<div class="muted small">${esc(r.notes)}</div>` : ''}
-      </div>
-      <div class="total">${total}</div>
-    </div>
-    `;
-
-    return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
   }
 
-  function renderBasketItem(currency,b){
-    const unit = toPrice(b.unit_price, currency);
-    const line = toPrice(b.line_total, currency);
-    const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
-    const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}${b.observed_price_text? ' • '+esc(b.observed_price_text): ''}</div>` : '';
-    const v = b.verification || {};
-    const vline = `<div class="small ${v.notes==='OK'?'good':'bad'}">
-      אימות: דומיין ${v.domain_ok?'✅':'❌'} • סטטוס ${v.http_status||0} • ₪/${v.price_source||'-'} ${v.found_shekel?'✅':'❌'} • התאמת מחיר ${v.price_matches?'✅':'❌'} • התאמת שם ~${Math.round((v.name_match||0)*100)}%</div>`;
-    return `<div class="row"><div>${esc(b.name)}${brand}${src}${isDebug?vline:''}</div><div>${line}</div></div>`;
-  }
-
-  function toPrice(num,cur="₪"){
-    if(num==null) return '—';
-    return `${cur} ${Number(num).toFixed(2)}`;
-  }
-
-  function esc(s){return String(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-  function escAttr(s){return String(s||'').replace(/"/g,'&quot;');}
-
-  function renderSkeleton(){
-    resultsEl.innerHTML = '';
-    loadingEl.style.display = 'block';
-  }
-
-  function shake(el){
-    el.style.transition = 'transform 0.15s';
-    el.style.transform='translateX(8px)';
-    setTimeout(()=>el.style.transform='translateX(-8px)',150);
-    setTimeout(()=>el.style.transform='translateX(0)',300);
-  }
 });
 </script>
 </body>
