@@ -1,7 +1,6 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) + Google Places + Zyte Auto-Extraction
-// מצב: משתמשים ב-Zyte לכל פריט (ברירת מחדל), עם קאשינג ו-timeouts.
-// שים לב: צריך ZYTE_API_KEY בצד שרת.
+// Deno + Hono + OpenAI Responses API (web_search) + Google Places + Zyte Auto-Extraction + Retailer Search Fallback
+// מצב: משתמשים ב-Zyte לכל פריט (ברירת מחדל), עם קאשינג, timeouts+retries, ו-fallback לחיפוש/קטגוריה באתר.
 
 // (אופציונלי) טען .env מקומית
 import "jsr:@std/dotenv/load";
@@ -27,7 +26,7 @@ const OPENAI_TIMEOUT_MS        = Number(Deno.env.get("OPENAI_TIMEOUT_MS") || 600
 const RETRY_ATTEMPTS           = Math.max(1, Number(Deno.env.get("RETRY_ATTEMPTS") || 3));
 const RETRY_BASE_MS            = Math.max(200, Number(Deno.env.get("RETRY_BASE_MS") || 600));
 
-// Allowed domains mode: both (retailers + aggregators) כברירת מחדל
+// Domains mode: both (retailers + aggregators) כברירת מחדל
 const ALLOWED_MODE = (Deno.env.get("ALLOWED_DOMAINS_MODE") || "both").toLowerCase(); // "aggregators" | "retailers" | "both"
 const RETAILER_DOMAINS = [
   "shufersal.co.il","rami-levy.co.il","victoryonline.co.il",
@@ -57,7 +56,7 @@ const COVERAGE_THRESHOLD = 0.6;
 
 // ===== Utils =====
 const SAFE_DEBUG_MAX = 2500;
-const UA = "CartCompareAI/1.0 (Deno; zyte-all; timeouts+retries)";
+const UA = "CartCompareAI/1.0 (Deno; zyte+fallback; timeouts+retries)";
 
 function rid(){ return crypto.randomUUID(); }
 function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
@@ -75,7 +74,7 @@ function extractJson(text:string){
 function decodeHtmlEntities(s: string): string {
   if (!s) return "";
   s = s.replace(/&#x([0-9a-fA-F]+);/g, (_,h)=> String.fromCharCode(parseInt(h,16)));
-  s = s.replace(/&#(\d+);/g, (_,d)=> String.fromCharCode(parseInt(d,10)));
+  s = s.replace(/&#(\d+);/g,  (_,d)=> String.fromCharCode(parseInt(d,10)));
   return s
     .replace(/&nbsp;/g, " ")
     .replace(/&quot;/g, '"')
@@ -215,7 +214,7 @@ async function listApprovedBranches(id:string, address:string, radius_km:number)
         branch_name: name,
         address: p.address || "",
         lat: p.lat, lng: p.lng,
-        branch_url: p.maps_url,
+        branch_url: p.place_id ? `https://www.google.com/maps/place/?q=place_id:${p.place_id}` : "",
         distance_km: Math.round(d*10)/10
       };
     })
@@ -228,19 +227,24 @@ async function listApprovedBranches(id:string, address:string, radius_km:number)
   return { center, formatted_address: geo.formatted, branches: out.slice(0, 12) };
 }
 
-// ===== Prompt (אין עוד דרישת ₪ — השרת ישתמש ב-Zyte) =====
+// ===== Prompt (מעדיף חיפוש/קטגוריות; אין דרישת ₪ — נסתמך על Zyte) =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
 HARD POLICY (DO NOT VIOLATE):
 - Do NOT fabricate prices or branches. Use ONLY information found now on the public web.
 - Branches MUST be selected ONLY from APPROVED_BRANCHES JSON (branch_id required). If none match—return empty results.
-- Product links (product_url) MUST be from the provided ALLOWED_DOMAINS list.
+- Product links (product_url) MUST be from ALLOWED_DOMAINS.
 - If an exact pack/size is unavailable, return a close substitute and set substitution=true; compute ppu (price per unit) and explain in notes.
 - Never output free text; finish by calling submit_results once.
 
+LINK SELECTION POLICY (VERY IMPORTANT):
+- Prefer CATEGORY or SEARCH pages on allowed domains (e.g., /search?text=..., /קטגוריות/..., "promotion" listings) where prices are visible, rather than single SKU pages like /p/<code>.
+- If a product detail page (/p/...) is chosen and yields no visible price, provide an alternate category/search URL for the same retailer.
+- Aggregators (zap.co.il, pricez.co.il, bonusbuy.co.il) are also good, but retailer SEARCH/CATEGORY pages are preferred if they show prices.
+
 TOOLS:
-- web_search: issue focused bilingual queries with brand + size + pack, restricted to ALLOWED_DOMAINS (e.g., site:shufersal.co.il or site:zap.co.il).
+- web_search: craft bilingual queries including brand + size + pack; restrict to ALLOWED_DOMAINS; include keywords like "search", "קטגוריות", or category names to bias towards listing pages.
 `.trim();
 
 // ===== submit_results schema =====
@@ -314,7 +318,7 @@ const SUBMIT_RESULTS_SCHEMA = {
   }
 } as const;
 
-// ===== OpenAI Responses API (with timeout) =====
+// ===== OpenAI Responses API =====
 async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
 
@@ -390,7 +394,7 @@ async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: stri
   return { parsed, raw: jsonOrText, request_id: requestIdHeader };
 }
 
-// ===== Zyte Adapter + Cache =====
+// ===== Zyte Adapter + Cache + DEBUG counters =====
 type ZyteProduct = {
   name?: string;
   brand?: string;
@@ -400,10 +404,14 @@ type ZyteProduct = {
 };
 
 const zyteCache = new Map<string, { ts: number; data: ZyteProduct | null }>();
+let zyteCalls = 0;
+let zyteCacheHits = 0;
+
 function zyteCacheGet(key: string) {
   const hit = zyteCache.get(key);
   if (!hit) return null;
   if (Date.now() - hit.ts > AUTO_EXTRACT_TTL_MS) { zyteCache.delete(key); return null; }
+  zyteCacheHits++;
   return hit.data;
 }
 function zyteCacheSet(key: string, data: ZyteProduct | null) {
@@ -431,6 +439,7 @@ async function extractProductWithZyte(url: string): Promise<ZyteProduct | null> 
   const cached = zyteCacheGet(cacheKey);
   if (cached) return cached;
 
+  zyteCalls++;
   const doCall = async () => {
     const r = await fetch("https://api.zyte.com/v1/extract", {
       method: "POST",
@@ -476,6 +485,56 @@ function normalizeZyteToLine(base: any, url: string, zp: ZyteProduct | null) {
   };
 }
 
+// ===== Retailer on-site search fallbacks =====
+const RETAILER_SEARCHERS: Record<string, (q: string)=>string[]> = {
+  "shufersal.co.il": (q: string) => [
+    `https://www.shufersal.co.il/online/he/search?text=${encodeURIComponent(q)}`,
+    `https://www.shufersal.co.il/online/he/%D7%A7%D7%98%D7%92%D7%95%D7%A8%D7%99%D7%95%D7%AA/%D7%A1%D7%95%D7%A4%D7%A8%D7%9E%D7%A8%D7%A7%D7%98/%D7%9E%D7%A9%D7%A7%D7%90%D7%95%D7%AA-%D7%A7%D7%9C%D7%99%D7%9D/c/A1308`,
+  ],
+  "rami-levy.co.il": (q: string) => [
+    `https://www.rami-levy.co.il/he/shop/search?q=${encodeURIComponent(q)}`
+  ],
+  "victoryonline.co.il": (q: string) => [
+    `https://www.victoryonline.co.il/catalogsearch/result/?q=${encodeURIComponent(q)}`
+  ],
+  "tivtaam.co.il": (q: string) => [
+    `https://www.tivtaam.co.il/catalogsearch/result/?q=${encodeURIComponent(q)}`
+  ],
+  "yohananof.co.il": (q: string) => [
+    `https://yohananof.co.il/catalogsearch/result/?q=${encodeURIComponent(q)}`
+  ],
+  "osherad.co.il": (q: string) => [
+    `https://www.osherad.co.il/catalogsearch/result/?q=${encodeURIComponent(q)}`
+  ],
+};
+
+function tokenScore(needle: string, hay: string){
+  const toks = needle.toLowerCase().split(/\s+/).filter(t=>t.length>1);
+  const h = hay.toLowerCase();
+  const hits = toks.filter(t => h.includes(t)).length;
+  return hits / Math.max(1, toks.length);
+}
+
+async function searchAndPickWithZyte(domain: string, it: any): Promise<ZyteProduct | null> {
+  const q = [it.brand, it.name, it.size].filter(Boolean).join(" ").replace(/\s+/g," ").trim();
+  const builders = RETAILER_SEARCHERS[domain];
+  if (!builders || !q) return null;
+
+  const urls = builders(q);
+  let best: { zp: ZyteProduct, score: number } | null = null;
+
+  for (const u of urls) {
+    const zp = await extractProductWithZyte(u).catch(()=> null);
+    if (!zp || !zp.name) continue;
+
+    const score = tokenScore(q, zp.name);
+    if (!best || score > best.score) best = { zp, score };
+    if (score >= 0.7 && (zp.offers?.[0]?.price ?? null) != null) break;
+  }
+
+  return best?.zp ?? null;
+}
+
 // ===== (Optional) HTML fetch helpers – נשארו לגיבוי אם תרצה בעתיד =====
 async function fetchText(url:string){
   const res = await retry(()=> fetchWithTimeout(url, {
@@ -493,14 +552,12 @@ async function fetchText(url:string){
 }
 function extractPriceFromHtml(htmlRaw:string){
   const html = decodeHtmlEntities(htmlRaw||"");
-  // ₪
   const re = /₪\s*([\d.,]+)|([\d.,]+)\s*₪/g;
   for (let m; (m = re.exec(html)); ){
     const s = (m[1] || m[2] || "").trim();
     const v = parseNumberLocaleish(s);
     if (!Number.isNaN(v)) return { value: v, source: "shekel-sign" as const };
   }
-  // JSON-LD
   const ldBlocks = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
   for (const block of ldBlocks){
     try{
@@ -515,7 +572,6 @@ function extractPriceFromHtml(htmlRaw:string){
       }
     } catch {}
   }
-  // data-attr
   const reData = /(data-(?:price|final-price|product-price)|itemprop="price"\s+content|content-price)=["']?([\d.,]+)["']?/i;
   const mData = reData.exec(html);
   if (mData){
@@ -525,7 +581,7 @@ function extractPriceFromHtml(htmlRaw:string){
   return { value: null as number|null, source: "none" as const };
 }
 
-// ===== Verification (Zyte on every request if enabled) =====
+// ===== Verification (Zyte on every request + site-search fallback) =====
 async function verifyItem(it:any){
   const res:any = {
     domain_ok:false, http_status:200, price_extracted:null as number|null, price_source:"none",
@@ -538,8 +594,24 @@ async function verifyItem(it:any){
 
   try{
     if (AUTO_EXTRACT_MODE) {
-      const zp = await extractProductWithZyte(it.product_url);
+      // 1) ניסיון על ה-URL המקורי
+      const first = await extractProductWithZyte(it.product_url);
+      let zp = first;
+      let pickedVia: "direct-url" | "site-search-fallback" = "direct-url";
+
+      // 2) אם אין מחיר — נסה חיפוש/קטגוריה באתר
+      const host = (()=> { try{ return new URL(it.product_url).hostname.replace(/^www\./,""); }catch{ return ""; }})();
+      const offerPrice = first?.offers?.[0]?.price ?? null;
+      if ((first==null || offerPrice==null) && host) {
+        const viaSearch = await searchAndPickWithZyte(host, it).catch(()=> null);
+        if (viaSearch?.offers?.[0]?.price != null) {
+          zp = viaSearch;
+          pickedVia = "site-search-fallback";
+        }
+      }
+
       if (!zp) { res.notes = "zyte-no-product"; return res; }
+
       const norm = normalizeZyteToLine(it, it.product_url, zp);
 
       res.price_extracted = (typeof norm.unit_price === "number") ? norm.unit_price : null;
@@ -558,6 +630,16 @@ async function verifyItem(it:any){
       }
 
       res.notes = (res.price_extracted != null) ? (res.price_matches ? "OK" : "price-mismatch") : "no-price-found";
+
+      if (DEBUG) {
+        res.zyte_debug = {
+          picked_via: pickedVia,
+          currency_detected: norm.currency,
+          price_extracted: res.price_extracted,
+          name_from_zyte: (zp?.name || null),
+          availability: (zp?.offers?.[0]?.availability || null)
+        };
+      }
       return res;
     }
 
@@ -592,6 +674,8 @@ async function verifyStore(store:any, approvedBranches: Map<string, any>){
     if (proof.domain_ok) {
       if (typeof proof.price_extracted === "number") {
         v.verified_items++;
+      } else {
+        v.issues.push(`item rejected: ${it.product_url || it.name} (${proof.notes}${proof.zyte_debug ? `; zyte=${JSON.stringify(proof.zyte_debug)}` : ''})`);
       }
     } else {
       v.issues.push(`item rejected: ${it.product_url || it.name} (${proof.notes})`);
@@ -628,6 +712,8 @@ app.get("/api/health", (c)=>{
     has_google_places_key: !!PLACES_KEY,
     zyte_enabled: AUTO_EXTRACT_MODE,
     has_zyte_key: !!ZYTE_API_KEY,
+    zyte_calls,
+    zyte_cache_hits,
     allowed_mode: ALLOWED_MODE,
     allowed_domains: [...ALLOWED_DOMAINS],
     debug_enabled: DEBUG,
@@ -661,8 +747,22 @@ ${JSON.stringify(branches, null, 2)}
 INSTRUCTIONS:
 - Choose branches ONLY from APPROVED_BRANCHES by branch_id.
 - Use ONLY ALLOWED_DOMAINS above.
+- Prefer SEARCH/CATEGORY URLs over /p/<code>.
 - Return ONE function call (submit_results). No free text.`;
   return c.json({ status:"ok", debug:{ instructions: PROMPT_SYSTEM, user_input: userPrompt }, requestId: id });
+});
+
+// DEBUG: בדיקת Zyte ישירה
+app.get("/api/test_zyte", async (c)=>{
+  const url = String(c.req.query("url")||"").trim();
+  if (!url) return c.json({ ok:false, error:"missing url" }, 400);
+  if (!hostOK(url)) return c.json({ ok:false, error:"domain not allowed", domain: (()=>{try{return new URL(url).hostname}catch{return ""}})() }, 400);
+  try{
+    const product = await extractProductWithZyte(url);
+    return c.json({ ok:true, product, zyte_calls, zyte_cache_hits }, 200);
+  }catch(e:any){
+    return c.json({ ok:false, error: e?.message || String(e) }, e?.status||500);
+  }
 });
 
 // Main search
@@ -676,6 +776,7 @@ app.post("/api/search", async (c)=>{
     const radius_km = Number(body?.radius_km ?? 0);
     const list_text = cleanText(String(body?.list_text ?? "").trim());
     const show_all  = !!body?.show_all;
+    const include_debug = !!body?.include_debug;
 
     const miss:string[]=[];
     if(!address)   miss.push("address");
@@ -703,12 +804,13 @@ ${JSON.stringify(branches, null, 2)}
 ENFORCEMENTS:
 - Choose branches ONLY from APPROVED_BRANCHES by branch_id.
 - Use ONLY ALLOWED_DOMAINS above.
+- Prefer SEARCH/CATEGORY URLs over /p/<code>.
 - Return ONE function call (submit_results). No free text.`;
 
     // 3) LLM
     const first = await callOpenAIOnce(PROMPT_SYSTEM, basePrompt, id);
 
-    // 4) אימות תוצאות (Zyte בכל בקשה)
+    // 4) אימות תוצאות (Zyte + fallback)
     const parsed = first.parsed as any;
     if (!parsed?.results || !Array.isArray(parsed.results)) {
       throw new HttpError(400, "Bad results shape from model", { openai_request_id: first.request_id });
@@ -720,18 +822,31 @@ ENFORCEMENTS:
       if (!v.store_verified) issues.push(`store not verified (branch=${s.branch_id}): ${v.issues.join("; ")}`);
     }
 
-    const verifiedOnly = parsed.results.filter((s:any)=> s.store_verification?.store_verified);
-    const finalResults = show_all ? parsed.results : verifiedOnly;
+    // 5) פילטור/דירוג + Fallback לבלתי-מאומתות
+    let finalResults = show_all ? parsed.results : parsed.results.filter((s:any)=> s.store_verification?.store_verified);
+    if (!show_all && finalResults.length === 0 && parsed.results.length > 0) {
+      finalResults = parsed.results.map((s:any)=> ({ ...s, _unverified_fallback: true }));
+    }
 
     finalResults.sort((a:any,b:any)=> (a.total_price??999999) - (b.total_price??999999));
     finalResults.forEach((r:any,i:number)=> r.rank = i+1);
 
-    const payload:any = { status:"ok", results: finalResults, requestId:id, openai_request_id: first.request_id ?? undefined };
-    if (DEBUG || body?.include_debug) payload.debug = {
-      issues,
-      approved_branches_count: branches.length,
-      openai_raw_excerpt: JSON.stringify(first.raw).slice(0, SAFE_DEBUG_MAX)
+    const payload:any = {
+      status:"ok",
+      results: finalResults,
+      requestId:id,
+      openai_request_id: first.request_id ?? undefined
     };
+
+    if (DEBUG || include_debug) {
+      payload.debug = {
+        issues,
+        approved_branches_count: branches.length,
+        zyte: { calls: zyteCalls, cache_hits: zyteCacheHits },
+        openai_raw_excerpt: JSON.stringify(first.raw).slice(0, SAFE_DEBUG_MAX)
+      };
+    }
+
     return c.json(payload, 200);
 
   }catch(e:any){
