@@ -1,687 +1,310 @@
-// server_deno.ts
-/**
- * Full Price Comparison Server - Deno edition (single-file)
- * - CHP-first aggregator pipeline, with multiple fallbacks
- * - Optional Zyte extraction (USE_ZYTE + ZYTE_API_KEY)
- * - LRU cache, tracing, retries, randomized UA, Hebrew-friendly helpers
- * - Endpoints: /health, /config, /branches, /debug/example, /compare
- *
- * Run:
- *   deno run --allow-net --allow-env --allow-read server_deno.ts
- *
- * .env example (optional for local runs):
- *   PORT=3000
- *   NODE_ENV=development
- *   USE_ZYTE=false
- *   ZYTE_API_KEY=
- *   REQUEST_TIMEOUT_MS=18000
- *   ENFORCE_APPROVED_BRANCHES=false
- *
- * Notes:
- * - Uses Oak for routing.
- * - Avoids retailer sites by default; focuses on aggregators (CHP, zap, pricez, bonusbuy).
- * - The "three supermarkets" requirement is satisfied by attempting to return results from
- *   at least three distinct stores when available (aggregators typically include store names).
- */
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>השוואת סל קניות AI</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+:root{ --ink:#0d1321; --muted:#6b7280; --brand:#2fb6ff; --bg:#f5f9ff; --card:#fff; --glass:#ffffffcc; --shadow:0 14px 34px rgba(15,50,90,.12) }
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+.landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%)}
+.landing-head{display:flex;align-items:center;justify-content:space-between}
+.brand-mini{display:flex;align-items:center;gap:10px;font-weight:900}
+.brand-mini .dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#76d2ff,#2fb6ff);box-shadow:0 6px 12px #2fb6ff55}
+.how{color:#075985;text-decoration:underline;font-weight:700}
+.landing-center{text-align:center;margin-top:8vh}
+.hero-title{font-size:clamp(22px,5.2vw,32px);line-height:1.15;margin:0}
+.hero-sub{color:var(--muted);margin:.5rem 0 1.1rem}
+.badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:1.1rem}
+.badge{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;box-shadow:0 8px 18px #0b3b6a12;font-weight:700}
+.hero-cta,.hero-ghost{width:100%;margin-top:.6rem}
+.screen{display:none}.screen.active{display:block}
+.page{padding:0 16px 110px}
+.box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px}
+.muted{color:var(--muted)}
+.input{display:flex;flex-direction:column;gap:8px}
+.input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0b3b6a0e;font-size:16px}
+.radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer}
+.row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb}
+.row+.row{margin-top:10px}.total{font-size:18px;font-weight:900}
+.cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7}
+.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px}
+.btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer}
+.btn-black{background:#111;color:#fff}.btn-ghost{background:#eaf6ff;color:#075985}
+.skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite}
+a{color:#075985}
+details>summary{cursor:pointer}
+.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700}
+pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;border-radius:12px;direction:ltr;overflow:auto;font-size:12px}
+.small{font-size:12px}
+.good{color:#047857;font-weight:800}
+.bad{color:#b91c1c;font-weight:800}
+.toggle{display:flex;align-items:center;gap:8px}
+</style>
+</head>
+<body>
+<div class="app">
 
-import { Application, Router, Context } from "https://deno.land/x/oak@v12.6.0/mod.ts";
+<!-- Screen 1: Landing -->
+<section id="s1" class="screen active">
+  <div class="landing">
+    <header class="landing-head">
+      <div class="brand-mini"><div class="dot"></div><span>CartCompare <b>AI</b></span></div>
+      <a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
+    </header>
 
-/* ---------------------------
-   Environment loading (simple)
-   - Reads .env if present (local) and merges with Deno.env
-   - Avoids depending on std/dotenv exports that changed across versions
-   --------------------------- */
-async function loadDotenvIfPresent(): Promise<Record<string,string>> {
-  try {
-    const txt = await Deno.readTextFile(".env");
-    const out: Record<string,string> = {};
-    for (const line of txt.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const [k, ...rest] = trimmed.split("=");
-      if (!k) continue;
-      const v = rest.join("=").trim();
-      // remove surrounding quotes if present
-      out[k.trim()] = v.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
-    }
-    return out;
-  } catch {
-    return {};
-  }
+    <div class="landing-center">
+      <h1 class="hero-title">מצא/י את סל הקניות הזול והמאומת לידך</h1>
+      <p class="hero-sub">מחירים מסומכים בקישורים חיים (₪) וסניפים אמיתיים</p>
+
+      <div class="badges">
+        <span class="badge">✅ אימות בצד השרת</span>
+        <span class="badge">🧭 סניפים אמיתיים</span>
+        <span class="badge">🧠 web_search</span>
+      </div>
+
+      <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
+      <button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
+    </div>
+  </div>
+</section>
+
+<!-- Screen 2: Address -->
+<section id="s2" class="screen">
+  <div class="page">
+    <div class="box">
+      <div style="font-weight:800;font-size:20px">מה הכתובת שלך?</div>
+      <div class="muted" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
+      <div class="input" style="margin-top:12px">
+        <label class="muted" for="address">כתובת / עיר</label>
+        <input id="address" placeholder="למשל: חולון, סוקולוב 10" />
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Screen 3: Radius -->
+<section id="s3" class="screen">
+  <div class="page">
+    <div class="box">
+      <div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
+      <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
+      <div class="radius-grid" style="margin-top:12px">
+        <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
+        <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
+        <button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
+        <button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
+      </div>
+      <div class="input" style="margin-top:12px">
+        <label class="muted" for="radius">או הזן/י ידנית</label>
+        <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Screen 4: List -->
+<section id="s4" class="screen">
+  <div class="page">
+    <div class="box">
+      <div style="font-weight:800;font-size:20px">מה תרצה לקנות?</div>
+      <div class="muted" style="margin-top:6px">טקסט חופשי. ה-AI יבין מוצרים וכמויות.</div>
+      <div class="input" style="margin-top:12px">
+        <textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 קוקה קולה 1.5 ל׳"></textarea>
+      </div>
+
+      <div class="toggle" style="margin-top:8px">
+        <input type="checkbox" id="verifiedOnly" checked />
+        <label for="verifiedOnly">הצג רק חנויות מאומתות</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Screen 5: Results -->
+<section id="s5" class="screen">
+  <div class="page">
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:800;font-size:20px">התוצאות</div>
+        <span class="pill">OpenAI web_search</span>
+      </div>
+      <div id="summary" class="muted" style="margin-top:6px"></div>
+      <div id="results" style="margin-top:12px"></div>
+      <div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none"></div>
+
+      <div id="debugWrap" style="display:none;margin-top:12px">
+        <details><summary>🔧 Debug</summary><pre id="debugJson" class="debug"></pre></details>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="cta">
+  <div class="inner">
+    <button id="back" class="btn btn-ghost" type="button">חזרה</button>
+    <button id="next" class="btn btn-black" type="button">הבא</button>
+  </div>
+</div>
+</div>
+
+<script>
+const screens = ['s1','s2','s3','s4','s5'].map(id=>document.getElementById(id));
+let step = 0;
+const btnNext = document.getElementById('next');
+const btnBack = document.getElementById('back');
+const startBtn = document.getElementById('startBtn');
+const howLink = document.getElementById('howLink');
+const gpsSoon = document.getElementById('gpsSoon');
+
+const addressEl = document.getElementById('address');
+const radiusEl = document.getElementById('radius');
+const listEl = document.getElementById('list');
+const verifiedOnlyEl = document.getElementById('verifiedOnly');
+
+const resultsEl = document.getElementById('results');
+const loadingEl = document.getElementById('loading');
+const summaryEl = document.getElementById('summary');
+const debugWrap = document.getElementById('debugWrap');
+const debugJson = document.getElementById('debugJson');
+const isDebug = new URLSearchParams(location.search).get('debug') === '1';
+
+function goto(n){
+  step = Math.max(0, Math.min(4, n));
+  screens.forEach((s,i)=> s.classList.toggle('active', i===step));
+  btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
+  btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+goto(0);
 
-const localEnv = await loadDotenvIfPresent();
-const processEnv = Deno.env.toObject();
-const ENV: Record<string,string> = { ...localEnv, ...processEnv };
+startBtn?.addEventListener('click', ()=> goto(1));
+howLink?.addEventListener('click', ()=> goto(1));
+gpsSoon?.addEventListener('click', ()=> alert('שימוש ב-GPS יתווסף בקרוב 😊'));
 
-// Config
-const PORT = Number(ENV.PORT ?? 3000);
-const NODE_ENV = ENV.NODE_ENV ?? "development";
-const USE_ZYTE = String(ENV.USE_ZYTE ?? "false").toLowerCase() === "true";
-const ZYTE_API_KEY = ENV.ZYTE_API_KEY ?? "";
-const REQUEST_TIMEOUT_MS = Number(ENV.REQUEST_TIMEOUT_MS ?? 18000);
-const ENFORCE_APPROVED_BRANCHES = String(ENV.ENFORCE_APPROVED_BRANCHES ?? "false").toLowerCase() === "true";
+document.querySelectorAll('[data-radius]').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
+    b.dataset.active="1";
+    radiusEl.value = b.getAttribute('data-radius');
+    goto(step+1);
+  });
+});
 
-/* ---------------------------
-   Aggregators / Denylist
-   --------------------------- */
-const AGGREGATOR_PRIMARY = "chp.co.il"; // primary aggregator (local aggregator)
-const AGGREGATOR_FALLBACKS = ["zap.co.il", "pricez.co.il", "bonusbuy.co.il"]; // at least 3 alternatives
-const ALLOWED_AGGREGATORS = [AGGREGATOR_PRIMARY, ...AGGREGATOR_FALLBACKS];
+btnBack.addEventListener('click', ()=>{ if(step===0){ return; } goto(step-1); });
 
-// Denylist of retailer domains (we won't verify/scrape retailer sites directly unless explicitly enabled)
-const RETAILER_DENYLIST = new Set([
-  "shufersal.co.il",
-  "victoryonline.co.il",
-  "rami-levy.co.il",
-  "yohananof.co.il",
-  "osherad.co.il",
-  "yenotbitan.co.il",
-  "tivtaam.co.il",
-  "superdosh.co.il",
-  "keshet-teamim.co.il",
-  "mega.co.il"
-]);
+btnNext.addEventListener('click', async ()=>{
+  if(step===1){ if(!addressEl.value.trim()) return shake(addressEl); return goto(step+1); }
+  if(step===2){ if(!radiusEl.value) return shake(radiusEl); return goto(step+1); }
+  if(step===3){ if(!listEl.value.trim()) return shake(listEl); return goto(step+1); }
+  if(step<4) return goto(step+1);
 
-/* ---------------------------
-   LRU Cache (simple)
-   --------------------------- */
-class LRUCache<K,V> {
-  max: number;
-  map: Map<K,V>;
-  constructor(max = 200) {
-    this.max = max;
-    this.map = new Map();
-  }
-  get(k: K): V | undefined {
-    if (!this.map.has(k)) return undefined;
-    const v = this.map.get(k)!;
-    this.map.delete(k);
-    this.map.set(k, v);
-    return v;
-  }
-  set(k: K, v: V) {
-    if (this.map.has(k)) this.map.delete(k);
-    this.map.set(k, v);
-    if (this.map.size > this.max) {
-      const first = this.map.keys().next().value;
-      this.map.delete(first);
-    }
-  }
-}
-const responseCache = new LRUCache<string, any>(300);
+  // Run search
+  renderSkeleton();
+  debugWrap.style.display = isDebug ? 'block' : 'none';
+  debugJson.textContent = '';
 
-/* ---------------------------
-   Approved branches sample (kept for parity)
-   --------------------------- */
-const APPROVED_BRANCHES = [
-  "ChIJm3E2f42zAhURPWjno-zc_7U",
-  "ChIJtSxk3F6zAhURG-fMxF5vY2Y",
-  "ChIJDYA4PQ2zAhUR5Zhc6BwkAhE"
-];
-
-/* ---------------------------
-   Utilities
-   --------------------------- */
-const sleep = (ms:number) => new Promise((r) => setTimeout(r, ms));
-const now = () => Date.now();
-const genRequestId = () => (typeof crypto?.randomUUID === "function") ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
-
-function hebNormalize(s?: string){
-  if (!s) return "";
-  return s.replace(/\s+/g, " ").replace(/[״"′’]/g, '"').replace(/[׳']/g, "'").trim();
-}
-function asNumber(x: unknown, fallback: number | null = null) {
-  if (x == null) return fallback;
-  const s = String(x).replace(/[^\d.,-]/g, "");
-  if (!s) return fallback;
-  const norm = s.replace(/,/g, ".");
-  const n = Number(norm);
-  return Number.isFinite(n) ? n : fallback;
-}
-function chooseUA(){
-  const uas = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
-  ];
-  return uas[Math.floor(Math.random()*uas.length)];
-}
-function isRetailerDomain(urlStr: string) {
-  try {
-    const h = new URL(urlStr).hostname;
-    for (const d of RETAILER_DENYLIST) if (h.endsWith(d)) return true;
-    return false;
-  } catch { return false; }
-}
-function isAllowedAggregator(urlStr: string) {
-  try {
-    const h = new URL(urlStr).hostname;
-    return ALLOWED_AGGREGATORS.some(d => h.endsWith(d));
-  } catch { return false; }
-}
-
-/* ---------------------------
-   HTTP fetch with timeout + UA
-   --------------------------- */
-async function timedFetch(url: string, options: RequestInit = {}, timeout = REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const headers = new Headers(options.headers || {});
-    if (!headers.has("user-agent")) headers.set("user-agent", chooseUA());
-    if (!headers.has("accept-language")) headers.set("accept-language", "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7");
-    const resp = await fetch(url, { ...options, headers, signal: controller.signal });
-    clearTimeout(id);
-    const text = await resp.text().catch(() => "");
-    return { status: resp.status, text };
-  } catch (e) {
-    clearTimeout(id);
-    throw e;
-  }
-}
-
-/* ---------------------------
-   Zyte extraction (optional)
-   --------------------------- */
-async function zyteExtract(url: string, { apiKey = ZYTE_API_KEY, timeout = 22000 } = {}) {
-  if (!USE_ZYTE) return { ok: false, status: 412, error: "zyte-disabled" };
-  if (!apiKey) return { ok: false, status: 400, error: "missing-zyte-api-key" };
-  const controller = new AbortController();
-  const t = setTimeout(()=> controller.abort(), timeout);
-  try {
-    const resp = await fetch("https://api.zyte.com/v1/extract", {
-      method: "POST",
-      headers: {
-        Authorization: "Apikey " + apiKey,
-        "Content-Type": "application/json",
-        Accept: "application/json"
-      },
-      body: JSON.stringify({ url, httpResponseBody: true, productList: true }),
-      signal: controller.signal
-    });
-    clearTimeout(t);
-    const status = resp.status;
-    const json = await resp.json().catch(() => null);
-    return { ok: status >= 200 && status < 300, status, data: json };
-  } catch (e) {
-    clearTimeout(t);
-    return { ok: false, status: 500, error: (e as Error).message };
-  }
-}
-
-/* ---------------------------
-   HTML helpers (lightweight)
-   --------------------------- */
-function extractLinksFromHtml(html: string) {
-  const links: { href: string; inner: string }[] = [];
-  const re = /<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    links.push({ href: m[1], inner: m[2] });
-  }
-  return links;
-}
-function htmlToText(html: string) {
-  const noScripts = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
-  return hebNormalize(noScripts.replace(/<[^>]+>/g, " "));
-}
-function guessPrices(text: string) {
-  const found: number[] = [];
-  const rx = /(₪\s?\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?\s?₪)/g;
-  let m;
-  while ((m = rx.exec(text)) !== null) {
-    const v = asNumber(m[0]);
-    if (v != null && v > 0 && v < 10000) found.push(v);
-  }
-  return found;
-}
-function inferSize(text: string) {
-  const pats = [
-    /(\d+(?:\.\d+)?)\s?(?:ליטר|L)\b/i,
-    /(\d+(?:\.\d+)?)\s?(?:מ\"ל|מיליליטר|ml)\b/i,
-    /\b(\d+)\s?יח'?\b/i,
-    /\b(\d+)\s?בקב(?:ו)?קים?\b/i,
-    /\b(\d+)\s?פחיות?\b/i
-  ];
-  for (const re of pats) {
-    const m = re.exec(text);
-    if (m) return m[0];
-  }
-  return null;
-}
-function normalizeProductName(n?: string) {
-  if (!n) return "";
-  return hebNormalize(n).replace(/\s{2,}/g, " ").trim();
-}
-function inferBrand(n?: string) {
-  if (!n) return null;
-  const s = n.toLowerCase();
-  if (/(קוקה|coca)/.test(s)) return "קוקה קולה";
-  if (/(פפסי|pepsi)/.test(s)) return "פפסי";
-  return null;
-}
-
-/* ---------------------------
-   CHP parsing heuristics
-   - looks for price tokens and nearby context
-   --------------------------- */
-function parseCHP(html: string, baseUrl: string, query: string) {
-  const items: any[] = [];
-  const links = extractLinksFromHtml(html);
-  const priceTokenRx = /(₪\s?\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?\s?₪)/g;
-  let m;
-  const hits: { index: number; token: string }[] = [];
-  while ((m = priceTokenRx.exec(html)) !== null) hits.push({ index: m.index, token: m[0] });
-
-  const WINDOW = 900;
-  for (const h of hits) {
-    const left = Math.max(0, h.index - WINDOW);
-    const right = Math.min(html.length, h.index + WINDOW);
-    const slice = html.slice(left, right);
-    const storeNameMatch = slice.match(/(?:שופרסל|ויקטורי|רמי לוי|טיב טעם|יוחננוף|מחסני השוק|יינות ביתן|חצי חינם|פרשמרקט|סופר דוש|אושר עד)/);
-    const store_name = storeNameMatch ? storeNameMatch[0] : "לא ידוע (CHP)";
-
-    let product_url: string | null = null;
-    for (const { href } of links) {
-      const pos = html.indexOf(href);
-      if (pos >= left && pos <= right) {
-        if (/\/search|\/%D7%|\?q=|\/קטגוריות|\/product|\/item/i.test(href)) {
-          try {
-            if (href.startsWith("/")) {
-              const u = new URL(baseUrl);
-              product_url = u.origin + href;
-            } else if (href.startsWith("http")) {
-              product_url = href;
-            } else {
-              const u = new URL(baseUrl);
-              product_url = u.origin + "/" + href.replace(/^\//, "");
-            }
-          } catch {
-            product_url = href;
-          }
-          if (product_url) break;
-        }
-      }
-    }
-
-    const plain = slice.replace(/<[^>]+>/g, " ");
-    const product_name_guess =
-      (plain.match(/קוקה.?קולה.*?(?:1\.5.?ליטר|1\.5.?L|2.?ליטר|1.?ליטר)/i) || [])[0] ||
-      (plain.match(/(?:בקבוק|פחית|מארז).{0,30}(?:קולה|קוקה)/i) || [])[0] ||
-      query;
-
-    const price = asNumber(h.token);
-    if (price != null && product_name_guess) {
-      items.push({
-        store_name,
-        product_name: normalizeProductName(product_name_guess),
-        price,
-        product_url: product_url || baseUrl,
-        source_domain: new URL(baseUrl).hostname,
-        observed_price_text: h.token,
-        size: inferSize(plain)
-      });
-    }
-  }
-
-  // dedupe (store,name,price)
-  const seen = new Set<string>();
-  const out: any[] = [];
-  for (const it of items) {
-    const key = [it.store_name, it.product_name, it.price].join("|");
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(it);
-    }
-  }
-  return out;
-}
-
-/* ---------------------------
-   fallback builders and generic parsing
-   --------------------------- */
-function buildFallbackUrl(host: string, query: string) {
-  const q = encodeURIComponent(query);
-  if (host === "zap.co.il") return `https://www.zap.co.il/search.aspx?keyword=${q}`;
-  if (host === "pricez.co.il") return `https://www.pricez.co.il/SearchResult.aspx?search=${q}`;
-  if (host === "bonusbuy.co.il") return `https://bonusbuy.co.il/search?query=${q}`;
-  // generic
-  return `https://${host}/search?q=${q}`;
-}
-
-async function scrapeAggregator(url: string, query: string, opts: { zyte?: boolean, zyteApiKey?: string } = {}) {
-  const debug: any = { url, tried: [], parsed: 0, notes: [] };
-  const results: any[] = [];
-  const zyteEnabled = opts.zyte ?? USE_ZYTE;
-  const zyteKey = opts.zyteApiKey ?? ZYTE_API_KEY;
-
-  // 1) Zyte path (aggregators only)
-  if (zyteEnabled && zyteKey && isAllowedAggregator(url)) {
-    const zx = await zyteExtract(url, { apiKey: zyteKey });
-    debug.tried.push({ via: "zyte", status: zx.status, ok: zx.ok });
-    if (zx.ok && zx.data) {
-      const list = zx.data?.productList?.products || [];
-      for (const p of list) {
-        const priceNum = asNumber(p?.price?.current ?? p?.price ?? p?.offers?.[0]?.price);
-        if (!priceNum) continue;
-        const link = p?.url || p?.productUrl || url;
-        results.push({
-          store_name: p?.retailer || p?.brand || "מקור משני",
-          product_name: normalizeProductName(p?.name || p?.title || query),
-          price: priceNum,
-          product_url: link,
-          source_domain: new URL(url).hostname,
-          observed_price_text: String(p?.price?.display ?? p?.price?.current ?? p?.price ?? ""),
-          size: p?.size || inferSize(p?.name || "")
-        });
-      }
-    } else {
-      // zyte returned no usable data; continue to HTTP path
-    }
-  }
-
-  // 2) HTTP parse
-  if (results.length === 0) {
-    try {
-      const r = await timedFetch(url, {}, REQUEST_TIMEOUT_MS);
-      debug.tried.push({ via: "http", status: r.status, length: r.text?.length ?? 0 });
-      if (r.status >= 200 && r.status < 300 && r.text) {
-        const host = new URL(url).hostname;
-        if (host.endsWith("chp.co.il")) {
-          const parsed = parseCHP(r.text, url, query);
-          debug.parsed = parsed.length;
-          results.push(...parsed);
-        } else {
-          // generic aggregator: try to guess prices
-          const text = htmlToText(r.text);
-          const prices = guessPrices(text);
-          if (prices.length > 0) {
-            results.push({
-              store_name: "מקור משני",
-              product_name: normalizeProductName(query),
-              price: prices.sort((a,b)=>a-b)[0],
-              product_url: url,
-              source_domain: host,
-              observed_price_text: `₪${prices[0]}`,
-              size: inferSize(text)
-            });
-          } else {
-            debug.notes.push("no-price-in-text");
-          }
-        }
-      } else {
-        debug.notes.push("http-non-2xx-or-empty");
-      }
-    } catch (e) {
-      debug.notes.push("http-error:" + (e as Error).message);
-    }
-  }
-
-  return { results, debug };
-}
-
-/* ---------------------------
-   normalize & ranking
-   - groups by store_name; builds basket style structure
-   --------------------------- */
-function normalizeResults(items: any[]) {
-  const groups = new Map<string, any[]>();
-  for (const it of items) {
-    // Safety: avoid returning direct retailer domains (unless allowed)
-    try {
-      if (!it.product_url || isRetailerDomain(it.product_url)) continue;
-      if (!isAllowedAggregator(it.product_url)) {
-        // If product_url is aggregator but not in ALLOWED_AGGREGATORS, still accept (best-effort)
-      }
-    } catch {
-      continue;
-    }
-
-    const key = it.store_name || "לא ידוע";
-    if (!groups.has(key)) groups.set(key, []);
-    const arr = groups.get(key)!;
-    arr.push({
-      name: it.product_name,
-      brand: inferBrand(it.product_name),
-      quantity: 1,
-      size: it.size || null,
-      pack_qty: 1,
-      unit: it.size?.includes("ליטר") ? "ליטר" : "יחידה",
-      unit_price: it.price,
-      ppu: it.price,
-      line_total: it.price,
-      product_url: it.product_url,
-      source_domain: it.source_domain,
-      observed_price_text: it.observed_price_text || (it.price ? `₪${it.price}` : null),
-      in_stock: true,
-      match_confidence: 0.6,
-      substitution: false,
-      notes: null,
-      verification: {
-        domain_ok: true,
-        http_status: null,
-        price_extracted: it.price,
-        price_source: "parsed",
-        found_shekel: true,
-        price_matches: true,
-        name_match: 0.5,
-        notes: null
-      }
-    });
-  }
-
-  const out: any[] = [];
-  for (const [store_name, basket] of groups) {
-    const total_price = (basket as any[]).reduce((s:number, x:any) => s + (x.line_total || 0), 0);
-    out.push({
-      rank: 0,
-      store_name,
-      branch_id: null,
-      branch_name: store_name,
-      address: null,
-      branch_url: null,
-      distance_km: null,
-      currency: "ILS",
-      total_price,
-      coverage: 1,
-      notes: null,
-      basket,
-      match_overall: 0.6,
-      store_verification: {
-        approved_branch: false,
-        verified_items: 0,
-        total_items: basket.length,
-        coverage_ratio: 0,
-        store_verified: false,
-        issues: []
-      }
-    });
-  }
-
-  // Sort by price ascending
-  out.sort((a,b) => (a.total_price || Infinity) - (b.total_price || Infinity));
-  out.forEach((x,i) => x.rank = i+1);
-
-  return out;
-}
-
-/* ---------------------------
-   top-level search flow:
-   - CHP first
-   - fallback hosts in order until we get results
-   - ensure attempt to return up to three different shops if possible
-   --------------------------- */
-async function searchAggregators(query: string, { citySlug = "חולון" } = {}) {
-  const traceId = genRequestId();
-  const debug: any = {
-    traceId,
-    policy: { primary: AGGREGATOR_PRIMARY, fallbacks: AGGREGATOR_FALLBACKS, denyRetailers: true, useZyte: USE_ZYTE },
-    steps: []
+  const payload = {
+    address: addressEl.value.trim(),
+    radius_km: Number(radiusEl.value || 5),
+    list_text: listEl.value.trim(),
+    show_all: !verifiedOnlyEl.checked ? true : false,
+    include_debug: isDebug
   };
 
-  const qEnc = encodeURIComponent(query);
-  const chpUrl = `https://${AGGREGATOR_PRIMARY}/${encodeURIComponent(citySlug)}/0/0/${qEnc}/0`;
+  summaryEl.textContent = `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • מוצרים: ${payload.list_text.split(/\s+/).length} מילים`;
 
-  // STEP 1: CHP
-  const stepChp = { site: AGGREGATOR_PRIMARY, url: chpUrl, status: "start" };
-  debug.steps.push(stepChp);
-  const chp = await scrapeAggregator(chpUrl, query);
-  stepChp.status = "done";
-  stepChp.debug = chp.debug;
-  stepChp.found = (chp.results || []).length;
+  try{
+    const res = await fetch('/api/search', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
 
-  let items = chp.results || [];
+    loadingEl.style.display = 'none';
+    if (isDebug) debugJson.textContent = JSON.stringify(data, null, 2);
 
-  // STEP 2: try fallbacks until we gather enough distinct stores (aim for at least 3)
-  if ((items || []).length < 1) {
-    for (const host of AGGREGATOR_FALLBACKS) {
-      const url = buildFallbackUrl(host, query);
-      const s = { site: host, url, status: "start" };
-      debug.steps.push(s);
-      const fb = await scrapeAggregator(url, query);
-      s.status = "done";
-      s.debug = fb.debug;
-      s.found = (fb.results || []).length;
-      if (fb.results && fb.results.length > 0) {
-        items = items.concat(fb.results);
-      }
-      // if we have > =3 distinct store_names, stop early
-      const distinctStores = new Set((items||[]).map((it:any)=>it.store_name));
-      if (distinctStores.size >= 3) break;
-    }
-  }
-
-  // In case still empty -> return empty results
-  const normalized = normalizeResults(items || []);
-  return { traceId, results: normalized, debug };
-}
-
-/* ---------------------------
-   Router + Endpoints (Oak)
-   --------------------------- */
-const router = new Router();
-
-// Health
-router.get("/health", (ctx) => {
-  ctx.response.body = { ok: true, env: NODE_ENV, time: new Date().toISOString() };
-});
-
-// Config
-router.get("/config", (ctx) => {
-  ctx.response.body = {
-    NODE_ENV,
-    PORT,
-    USE_ZYTE,
-    ENFORCE_APPROVED_BRANCHES,
-    REQUEST_TIMEOUT_MS,
-    ALLOWED_AGGREGATORS,
-    RETAILER_DENYLIST_COUNT: RETAILER_DENYLIST.size,
-    HAVE_ZYTE_KEY: !!ZYTE_API_KEY
-  };
-});
-
-// Branches
-router.get("/branches", (ctx) => {
-  ctx.response.body = { count: APPROVED_BRANCHES.length, approved_place_ids: APPROVED_BRANCHES };
-});
-
-// Debug example (probe CHP)
-router.get("/debug/example", async (ctx) => {
-  const q = String(ctx.request.url.searchParams.get("q") ?? "קוקה קולה 1.5 ליטר");
-  const citySlug = String(ctx.request.url.searchParams.get("city") ?? "חולון");
-  const url = `https://${AGGREGATOR_PRIMARY}/${encodeURIComponent(citySlug)}/0/0/${encodeURIComponent(q)}/0`;
-  const out: any = { query: q, city: citySlug, url, steps: [] };
-
-  if (USE_ZYTE && ZYTE_API_KEY) {
-    const zx = await zyteExtract(url, { apiKey: ZYTE_API_KEY });
-    out.steps.push({ via: "zyte", ok: zx.ok, status: zx.status, zyte_summary: zx.data ? (Array.isArray(zx.data.productList?.products) ? zx.data.productList.products.length : undefined) : undefined });
-  }
-
-  try {
-    const r = await timedFetch(url, {}, REQUEST_TIMEOUT_MS);
-    out.steps.push({ via: "http", status: r.status, sample: r.text?.slice(0, 600) ?? "" });
-    if (r.status >= 200 && r.status < 300 && r.text) {
-      const parsed = parseCHP(r.text, url, q);
-      out.extracted = parsed.slice(0, 8);
-      out.count = parsed.length;
-    }
-  } catch (e) {
-    out.steps.push({ via: "http", error: (e as Error).message });
-  }
-
-  ctx.response.body = out;
-});
-
-// Compare endpoint
-router.get("/compare", async (ctx) => {
-  try {
-    const qraw = ctx.request.url.searchParams.get("q");
-    if (!qraw) {
-      ctx.response.status = 400;
-      ctx.response.body = { status: "need_input", needed: ["q - query string"] };
+    if(!res.ok){
+      resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
+      console.error("API error", data);
       return;
     }
-    const q = hebNormalize(String(qraw));
-    const citySlug = String(ctx.request.url.searchParams.get("city") ?? "חולון");
-    const show_all = String(ctx.request.url.searchParams.get("show_all") ?? "false").toLowerCase() === "true";
-
-    // cache key
-    const cacheKey = JSON.stringify({ q, citySlug, show_all });
-    const cached = responseCache.get(cacheKey);
-    if (cached) {
-      ctx.response.body = { status: "ok", ...cached, cached: true };
+    if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
+      resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
       return;
     }
 
-    const { traceId, results, debug } = await searchAggregators(q, { citySlug });
+    resultsEl.innerHTML = data.results.map(renderStore).join('');
 
-    // Optionally filter verified stores - in this aggregator-only mode we don't run server-side price verification
-    // Just produce the normalized results and return
-    const payload = { status: "ok", results, requestId: traceId, debug };
-    responseCache.set(cacheKey, payload);
-    ctx.response.body = payload;
-  } catch (e) {
-    ctx.response.status = 500;
-    ctx.response.body = { status: "error", error: (e as Error).message };
+  }catch(err){
+    loadingEl.style.display = 'none';
+    resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
+    console.error("Network error", err);
   }
 });
 
-// Root
-router.get("/", (ctx) => {
-  ctx.response.body = {
-    message: "Price-compare Deno server",
-    endpoints: ["/health", "/config", "/branches", "/debug/example?q=...", "/compare?q=...&city=..."]
-  };
-});
+function renderStore(r){
+  const total = toPrice(r.total_price, r.currency || "₪");
+  const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
+  const cover = (typeof r.coverage === 'number') ? `${Math.round(r.coverage*100)}%` : '—';
 
-/* ---------------------------
-   App + Middleware
-   --------------------------- */
-const app = new Application();
+  const storeVer = r.store_verification || {};
+  const verified = !!storeVer.store_verified;
+  const badge = verified ? `<span class="pill good">מאומת</span>` : `<span class="pill bad">לא מאומת</span>`;
 
-// simple request logging + trace id
-app.use(async (ctx, next) => {
-  const id = genRequestId();
-  ctx.response.headers.set("x-trace-id", id);
-  const start = now();
-  try {
-    await next();
-  } finally {
-    const dur = now() - start;
-    const line = `${new Date().toISOString()} ${ctx.request.method} ${ctx.request.url.pathname} ${ctx.response.status} ${dur}ms trace=${id}`;
-    if (ctx.response.status && ctx.response.status >= 500) console.error(line);
-    else console.log(line);
-  }
-});
+  const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
+    const unit = toPrice(b.unit_price, r.currency || "₪");
+    const line = toPrice(b.line_total, r.currency || "₪");
+    const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
+    const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}${b.observed_price_text? ' • '+esc(b.observed_price_text): ''}</div>` : '';
 
-app.use(router.routes());
-app.use(router.allowedMethods());
+    const v = b.verification || {};
+    const vline = `<div class="small ${v.notes==='OK'?'good':'bad'}">
+      אימות: דומיין ${v.domain_ok?'✅':'❌'} • סטטוס ${v.http_status||0} • ₪/${v.price_source||'-'} ${v.found_shekel?'✅':'❌'} • התאמת מחיר ${v.price_matches?'✅':'❌'} • התאמת שם ~${Math.round((v.name_match||0)*100)}%
+    </div>`;
 
-console.log(`[server] listening on http://localhost:${PORT} (env=${NODE_ENV})`);
-await app.listen({ port: PORT });
+    const sub = b.substitution ? ` <span class="pill">תחליף</span>` : '';
 
-/* ---------------------------
-   End of file
-   --------------------------- */
+    return `
+      <div class="row">
+        <div>
+          <div><strong>${esc(b.name||'')}</strong>${brand}${sub}</div>
+          <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • נפח/גודל: ${esc(b.size||'-')} • יח': ${esc(b.pack_qty??'-')}</div>
+          ${src}${vline}
+        </div>
+        <div class="total">${line}</div>
+      </div>`;
+  }).join('') : '';
+
+  const hdr = `
+  <div class="row">
+    <div>
+      <div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong> ${badge}</div>
+      <div class="muted small">${esc(r.branch_name||'')} • ${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo} • כיסוי ${cover}</div>
+      ${r.branch_url ? `<div class="small"><a href="${escAttr(r.branch_url)}" target="_blank" rel="noopener">דף הסניף / מפות</a></div>` : ''}
+      ${r.notes ? `<div class="muted small">${esc(r.notes)}</div>` : ''}
+    </div>
+    <div class="total">${total}</div>
+  </div>
+  `;
+
+  return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
+}
+
+function renderSkeleton(){ resultsEl.innerHTML=''; loadingEl.style.display='block'; }
+function row(title, msg){ return `<div class="row"><div><strong>${esc(title)}</strong><div class="muted" style="font-size:12px">${esc(msg)}</div></div></div>`; }
+function shake(el){ el.style.borderColor='#ffb4b4'; el.animate([{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],{duration:260}); setTimeout(()=>el.style.borderColor='#e6edf7',320); }
+function esc(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
+function escAttr(s){return String(s??'').replace(/"/g,'&quot;')}
+function toPrice(v, currency){
+  if (typeof v === "number") return v.toFixed(2)+" "+currency;
+  if (typeof v === "string" && v.trim()) return v.includes("₪") ? v : (v+" "+currency);
+  return "—";
+}
+</script>
+</body>
+</html>
