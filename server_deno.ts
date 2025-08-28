@@ -1,310 +1,635 @@
-<!DOCTYPE html>
-<html lang="he" dir="rtl">
-<head>
-<meta charset="utf-8" />
-<title>השוואת סל קניות AI</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<style>
-:root{ --ink:#0d1321; --muted:#6b7280; --brand:#2fb6ff; --bg:#f5f9ff; --card:#fff; --glass:#ffffffcc; --shadow:0 14px 34px rgba(15,50,90,.12) }
-*{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden}
-.landing{position:relative;min-height:100dvh;padding:24px 16px 120px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(120% 100% at 50% 0%, #eaf6ff 0%, #f7fbff 60%, transparent 100%)}
-.landing-head{display:flex;align-items:center;justify-content:space-between}
-.brand-mini{display:flex;align-items:center;gap:10px;font-weight:900}
-.brand-mini .dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#76d2ff,#2fb6ff);box-shadow:0 6px 12px #2fb6ff55}
-.how{color:#075985;text-decoration:underline;font-weight:700}
-.landing-center{text-align:center;margin-top:8vh}
-.hero-title{font-size:clamp(22px,5.2vw,32px);line-height:1.15;margin:0}
-.hero-sub{color:var(--muted);margin:.5rem 0 1.1rem}
-.badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:1.1rem}
-.badge{padding:10px 12px;border-radius:999px;border:1px solid #e6edf7;background:#fff;box-shadow:0 8px 18px #0b3b6a12;font-weight:700}
-.hero-cta,.hero-ghost{width:100%;margin-top:.6rem}
-.screen{display:none}.screen.active{display:block}
-.page{padding:0 16px 110px}
-.box{background:var(--card);border-radius:22px;box-shadow:var(--shadow);padding:16px}
-.muted{color:var(--muted)}
-.input{display:flex;flex-direction:column;gap:8px}
-.input input,.input textarea{width:100%;padding:14px;border-radius:16px;border:1px solid #e6edf7;outline:none;box-shadow:0 6px 12px #0b3b6a0e;font-size:16px}
-.radius-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.btn-chip{border:none;border-radius:999px;padding:12px 14px;background:#eef6ff;color:#0369a1;font-weight:800;cursor:pointer}
-.row{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:16px;background:#fff;border:1px solid #eaf1fb}
-.row+.row{margin-top:10px}.total{font-size:18px;font-weight:900}
-.cta{position:fixed;inset-inline:0;bottom:0;background:var(--glass);backdrop-filter:blur(12px);border-top:1px solid #e6edf7}
-.cta .inner{max-width:480px;margin:0 auto;display:flex;gap:10px;padding:12px 16px}
-.btn{appearance:none;border:none;border-radius:14px;padding:14px 16px;font-weight:900;cursor:pointer}
-.btn-black{background:#111;color:#fff}.btn-ghost{background:#eaf6ff;color:#075985}
-.skeleton{position:relative;overflow:hidden;background:#eef2f7;border-radius:16px}
-.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff66,transparent);animation:shimmer 1.4s infinite}
-a{color:#075985}
-details>summary{cursor:pointer}
-.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef6ff;color:#075985;font-size:12px;font-weight:700}
-pre.debug{white-space:pre-wrap;background:#0b1220;color:#e5eefb;padding:10px;border-radius:12px;direction:ltr;overflow:auto;font-size:12px}
-.small{font-size:12px}
-.good{color:#047857;font-weight:800}
-.bad{color:#b91c1c;font-weight:800}
-.toggle{display:flex;align-items:center;gap:8px}
-</style>
-</head>
-<body>
-<div class="app">
+// server_deno.ts (improved)
+// Deno + Hono + OpenAI Responses API (web_search) + Google Places
+// Hard server-side verification + timeouts, retries, and limited concurrency
 
-<!-- Screen 1: Landing -->
-<section id="s1" class="screen active">
-  <div class="landing">
-    <header class="landing-head">
-      <div class="brand-mini"><div class="dot"></div><span>CartCompare <b>AI</b></span></div>
-      <a class="how" href="javascript:void(0)" id="howLink">איך זה עובד?</a>
-    </header>
+import { Hono } from "npm:hono";
+import { cors } from "npm:hono/cors";
+import { serveStatic } from "npm:hono/serve-static";
 
-    <div class="landing-center">
-      <h1 class="hero-title">מצא/י את סל הקניות הזול והמאומת לידך</h1>
-      <p class="hero-sub">מחירים מסומכים בקישורים חיים (₪) וסניפים אמיתיים</p>
+const app = new Hono();
 
-      <div class="badges">
-        <span class="badge">✅ אימות בצד השרת</span>
-        <span class="badge">🧭 סניפים אמיתיים</span>
-        <span class="badge">🧠 web_search</span>
-      </div>
+// ===== ENV =====
+const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-4.1";
+const PLACES_KEY   = Deno.env.get("GOOGLE_PLACES_API_KEY") ?? "";
+const DEBUG        = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
+const TEMP_STR     = Deno.env.get("OPENAI_TEMPERATURE");
+const OPENAI_TEMP  = (TEMP_STR!=null && TEMP_STR.trim()!=="") ? Number(TEMP_STR) : 0;
 
-      <button id="startBtn" class="btn btn-black hero-cta">בואו נתחיל</button>
-      <button id="gpsSoon" class="btn btn-ghost hero-ghost">שימוש ב-GPS (בקרוב)</button>
-    </div>
-  </div>
-</section>
+// ===== Networking defaults =====
+const UA = "CartCompareAI/1.0 (Deno)";
+const FETCH_TIMEOUT_MS = 15000;     // retailers pages, HTML, etc.
+const OPENAI_TIMEOUT_MS = 45000;    // LLM call
+const PLACES_TIMEOUT_MS = 15000;    // Google APIs
+const VERIFY_CONCURRENCY = 5;       // verify items in parallel (pool)
 
-<!-- Screen 2: Address -->
-<section id="s2" class="screen">
-  <div class="page">
-    <div class="box">
-      <div style="font-weight:800;font-size:20px">מה הכתובת שלך?</div>
-      <div class="muted" style="margin-top:6px">אפשר לכתוב עיר/רחוב. (בעתיד: GPS)</div>
-      <div class="input" style="margin-top:12px">
-        <label class="muted" for="address">כתובת / עיר</label>
-        <input id="address" placeholder="למשל: חולון, סוקולוב 10" />
-      </div>
-    </div>
-  </div>
-</section>
+// ===== Utils =====
+const SAFE_DEBUG_MAX = 2500;
+function rid(){ return crypto.randomUUID(); }
+function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
+function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
+class HttpError extends Error { status:number; payload?:unknown; constructor(s:number,m:string,p?:unknown){ super(m); this.status=s; this.payload=p; } }
 
-<!-- Screen 3: Radius -->
-<section id="s3" class="screen">
-  <div class="page">
-    <div class="box">
-      <div style="font-weight:800;font-size:20px">רדיוס חיפוש</div>
-      <div class="muted" style="margin-top:6px">בחר/י כמה ק״מ מסביב לכתובת</div>
-      <div class="radius-grid" style="margin-top:12px">
-        <button class="btn-chip" type="button" data-radius="2">2 ק״מ</button>
-        <button class="btn-chip" type="button" data-radius="5">5 ק״מ</button>
-        <button class="btn-chip" type="button" data-radius="10">10 ק״מ</button>
-        <button class="btn-chip" type="button" data-radius="15">15 ק״מ</button>
-      </div>
-      <div class="input" style="margin-top:12px">
-        <label class="muted" for="radius">או הזן/י ידנית</label>
-        <input id="radius" type="number" min="1" step="0.5" placeholder="5" />
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- Screen 4: List -->
-<section id="s4" class="screen">
-  <div class="page">
-    <div class="box">
-      <div style="font-weight:800;font-size:20px">מה תרצה לקנות?</div>
-      <div class="muted" style="margin-top:6px">טקסט חופשי. ה-AI יבין מוצרים וכמויות.</div>
-      <div class="input" style="margin-top:12px">
-        <textarea id="list" rows="5" placeholder="למשל: שישיית מי עדן 1.5 ל׳, חזה עוף 1 ק״ג, 2 קוקה קולה 1.5 ל׳"></textarea>
-      </div>
-
-      <div class="toggle" style="margin-top:8px">
-        <input type="checkbox" id="verifiedOnly" checked />
-        <label for="verifiedOnly">הצג רק חנויות מאומתות</label>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- Screen 5: Results -->
-<section id="s5" class="screen">
-  <div class="page">
-    <div class="box">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div style="font-weight:800;font-size:20px">התוצאות</div>
-        <span class="pill">OpenAI web_search</span>
-      </div>
-      <div id="summary" class="muted" style="margin-top:6px"></div>
-      <div id="results" style="margin-top:12px"></div>
-      <div id="loading" class="skeleton" style="height:64px;margin-top:12px;display:none"></div>
-
-      <div id="debugWrap" style="display:none;margin-top:12px">
-        <details><summary>🔧 Debug</summary><pre id="debugJson" class="debug"></pre></details>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="cta">
-  <div class="inner">
-    <button id="back" class="btn btn-ghost" type="button">חזרה</button>
-    <button id="next" class="btn btn-black" type="button">הבא</button>
-  </div>
-</div>
-</div>
-
-<script>
-const screens = ['s1','s2','s3','s4','s5'].map(id=>document.getElementById(id));
-let step = 0;
-const btnNext = document.getElementById('next');
-const btnBack = document.getElementById('back');
-const startBtn = document.getElementById('startBtn');
-const howLink = document.getElementById('howLink');
-const gpsSoon = document.getElementById('gpsSoon');
-
-const addressEl = document.getElementById('address');
-const radiusEl = document.getElementById('radius');
-const listEl = document.getElementById('list');
-const verifiedOnlyEl = document.getElementById('verifiedOnly');
-
-const resultsEl = document.getElementById('results');
-const loadingEl = document.getElementById('loading');
-const summaryEl = document.getElementById('summary');
-const debugWrap = document.getElementById('debugWrap');
-const debugJson = document.getElementById('debugJson');
-const isDebug = new URLSearchParams(location.search).get('debug') === '1';
-
-function goto(n){
-  step = Math.max(0, Math.min(4, n));
-  screens.forEach((s,i)=> s.classList.toggle('active', i===step));
-  btnBack.textContent = step===0 ? 'יציאה' : 'חזרה';
-  btnNext.textContent = step===4 ? 'חפש עכשיו' : 'הבא';
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+function extractJson(text:string){
+  if (!text) return null;
+  const fence = text.match(/```json\s*([\s\S]*?)```/i);
+  if (fence?.[1]) { try { return JSON.parse(fence[1].trim()); } catch {} }
+  const a = text.indexOf("{"), b = text.lastIndexOf("}");
+  if (a>=0 && b>a) { try { return JSON.parse(text.slice(a, b+1)); } catch {} }
+  return null;
 }
-goto(0);
+function decodeHtmlEntities(s: string): string {
+  if (!s) return "";
+  s = s.replace(/&#x([0-9a-fA-F]+);/g, (_:any,h:string)=> String.fromCharCode(parseInt(h,16)));
+  s = s.replace(/&#(\d+);/g, (_:any,d:string)=> String.fromCharCode(parseInt(d,10)));
+  return s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+function stripBidiControls(s: string): string {
+  if (!s) return "";
+  const BIDI = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+  return s.replace(BIDI, "");
+}
+function normalizeSpaces(s: string): string { return s.replace(/\s+/g, " ").trim(); }
+function cleanText(s: string, maxLen = 400): string {
+  const out = normalizeSpaces(stripBidiControls(decodeHtmlEntities(s)));
+  return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
+}
+function haversineKm(a:{lat:number,lng:number}, b:{lat:number,lng:number}){
+  const R=6371; const dLat=(b.lat-a.lat)*Math.PI/180; const dLng=(b.lng-a.lng)*Math.PI/180;
+  const s=Math.sin(dLat/2)**2 + Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+function parseNumberLocaleish(x:string){
+  return Number(
+    x
+      .replace(/\u200f|\u200e/g, "")
+      .replace(/\s/g,"")
+      .replace(/(?<=\d)[,](?=\d{3}\b)/g,"")
+      .replace(/[.](?=\d{3}\b)/g,"")
+      .replace(/,/g,".")
+  );
+}
 
-startBtn?.addEventListener('click', ()=> goto(1));
-howLink?.addEventListener('click', ()=> goto(1));
-gpsSoon?.addEventListener('click', ()=> alert('שימוש ב-GPS יתווסף בקרוב 😊'));
+// Small helpers: timeout + retry + pool
+function withTimeout(ms:number){
+  const ac = new AbortController();
+  const t = setTimeout(()=> ac.abort(), ms);
+  return { signal: ac.signal, cancel: ()=> clearTimeout(t) };
+}
+async function fetchWithTimeout(url:string, init:RequestInit, ms:number){
+  const { signal, cancel } = withTimeout(ms);
+  try{
+    const res = await fetch(url, { ...init, signal });
+    return res;
+  } finally { cancel(); }
+}
+async function retry<T>(fn:()=>Promise<T>, tries=3, baseDelay=300): Promise<T> {
+  let lastErr: any;
+  for (let i=0;i<tries;i++){
+    try{ return await fn(); } catch(e){ lastErr = e; }
+    await new Promise(r=> setTimeout(r, baseDelay * Math.pow(2,i)));
+  }
+  throw lastErr;
+}
+async function mapPool<T,R>(items:T[], limit:number, worker:(t:T)=>Promise<R>): Promise<R[]> {
+  const res: R[] = []; let i=0; let active=0; let rej:(e:any)=>void; let done:()=>void;
+  const outP = new Promise<R[]>((resolve, reject)=>{ done=()=>resolve(res); rej=reject; });
+  const next = () => {
+    if (i>=items.length && active===0) return done!();
+    while (active<limit && i<items.length){
+      const idx=i++; active++;
+      worker(items[idx]).then((r)=>{ res[idx]=r; active--; next(); }).catch((e)=> rej!(e));
+    }
+  };
+  next();
+  return outP;
+}
 
-document.querySelectorAll('[data-radius]').forEach(b=>{
-  b.addEventListener('click', ()=>{
-    document.querySelectorAll('[data-radius]').forEach(x=>x.dataset.active="0");
-    b.dataset.active="1";
-    radiusEl.value = b.getAttribute('data-radius');
-    goto(step+1);
+// ===== Constants =====
+const APPROVED_DOMAINS = new Set([
+  "shufersal.co.il","rami-levy.co.il","victoryonline.co.il",
+  "yohananof.co.il","tivtaam.co.il","osherad.co.il"
+]);
+const APPROVED_CHAINS = [
+  { chain: "שופרסל",   keyword: "שופרסל סניף" },
+  { chain: "רמי לוי",  keyword: "רמי לוי סניף" },
+  { chain: "ויקטורי",  keyword: "ויקטורי סניף" },
+  { chain: "טיב טעם",  keyword: "טיב טעם סניף" },
+  { chain: "יוחננוף",  keyword: "יוחננוף סניף" },
+  { chain: "אושר עד",  keyword: "אושר עד סניף" },
+];
+
+const COVERAGE_THRESHOLD = 0.6;
+
+// ===== Google Geocode + Places =====
+async function geocodeAddress(id:string, address:string){
+  if (!PLACES_KEY) throw new HttpError(500, "Missing GOOGLE_PLACES_API_KEY");
+  const u = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+  u.searchParams.set("address", address);
+  u.searchParams.set("key", PLACES_KEY);
+  const j = await retry(async ()=>{
+    const r = await fetchWithTimeout(u.toString(), { headers:{"user-agent":UA} }, PLACES_TIMEOUT_MS);
+    return r.json();
   });
-});
+  if (j.status !== "OK" || !j.results?.[0]?.geometry?.location){
+    throw new HttpError(400, `Geocode failed for address`);
+  }
+  const { lat, lng } = j.results[0].geometry.location;
+  return { lat, lng, formatted: j.results[0].formatted_address as string };
+}
 
-btnBack.addEventListener('click', ()=>{ if(step===0){ return; } goto(step-1); });
+async function nearbyForChain(id:string, center:{lat:number;lng:number}, radiusMeters:number, chainKeyword:string){
+  const u = new URL("https://maps.googleapis.com/maps/api/place/nearbysearch/json");
+  u.searchParams.set("key", PLACES_KEY);
+  u.searchParams.set("location", `${center.lat},${center.lng}`);
+  u.searchParams.set("radius", String(Math.min(radiusMeters, 50000)));
+  u.searchParams.set("keyword", chainKeyword);
+  u.searchParams.set("type", "supermarket");
+  const j = await retry(async ()=>{
+    const r = await fetchWithTimeout(u.toString(), { headers:{"user-agent":UA} }, PLACES_TIMEOUT_MS);
+    return r.json();
+  });
+  if (j.status !== "OK" && j.status !== "ZERO_RESULTS"){
+    info(id, "Places nearby status", j.status);
+  }
+  const items = Array.isArray(j.results) ? j.results : [];
+  return items.map((p:any)=>({
+    place_id: String(p.place_id||""),
+    name: String(p.name||""),
+    address: String(p.vicinity || p.formatted_address || ""),
+    lat: Number(p.geometry?.location?.lat ?? 0),
+    lng: Number(p.geometry?.location?.lng ?? 0),
+    maps_url: p.place_id ? `https://www.google.com/maps/place/?q=place_id:${p.place_id}` : "",
+    rating: typeof p.rating==="number" ? p.rating : null
+  }));
+}
 
-btnNext.addEventListener('click', async ()=>{
-  if(step===1){ if(!addressEl.value.trim()) return shake(addressEl); return goto(step+1); }
-  if(step===2){ if(!radiusEl.value) return shake(radiusEl); return goto(step+1); }
-  if(step===3){ if(!listEl.value.trim()) return shake(listEl); return goto(step+1); }
-  if(step<4) return goto(step+1);
+type Branch = {
+  branch_id: string;
+  chain: string;
+  branch_name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  branch_url: string;
+  distance_km: number;
+};
 
-  // Run search
-  renderSkeleton();
-  debugWrap.style.display = isDebug ? 'block' : 'none';
-  debugJson.textContent = '';
+async function listApprovedBranches(id:string, address:string, radius_km:number){
+  const geo = await geocodeAddress(id, address);
+  const center = { lat: geo.lat, lng: geo.lng };
+  const radiusMeters = Math.max(500, Math.round(radius_km*1000));
+  const out: Branch[] = [];
 
-  const payload = {
-    address: addressEl.value.trim(),
-    radius_km: Number(radiusEl.value || 5),
-    list_text: listEl.value.trim(),
-    show_all: !verifiedOnlyEl.checked ? true : false,
-    include_debug: isDebug
+  for (const c of APPROVED_CHAINS){
+    const raw = await nearbyForChain(id, center, radiusMeters, c.keyword + " " + address);
+    const mapped = raw.map(p=>{
+      const d = p.lat && p.lng ? haversineKm(center, {lat:p.lat,lng:p.lng}) : 9999;
+      const name = p.name || c.chain;
+      return <Branch>{
+        branch_id: p.place_id,
+        chain: c.chain,
+        branch_name: name,
+        address: p.address || "",
+        lat: p.lat, lng: p.lng,
+        branch_url: p.maps_url,
+        distance_km: Math.round(d*10)/10
+      };
+    })
+    .filter(b => b.branch_id && b.distance_km <= radius_km + 0.8)
+    .sort((a,b)=> a.distance_km - b.distance_km)
+    .slice(0, 3);
+    out.push(...mapped);
+  }
+
+  out.sort((a,b)=> a.distance_km - b.distance_km);
+  return { center, formatted_address: geo.formatted, branches: out.slice(0, 12) };
+}
+
+// ===== System Prompt =====
+const PROMPT_SYSTEM = `
+You are a price-comparison agent for Israeli groceries.
+
+HARD POLICY (DO NOT VIOLATE):
+- Do NOT fabricate prices or branches. Use ONLY information found now on the public web.
+- Branches MUST be selected ONLY from APPROVED_BRANCHES JSON (branch_id required). If none match—return empty results.
+- Prices MUST come ONLY from approved retailer domains in ALLOWED_DOMAINS. Each line MUST include product_url AND observed_price_text containing "₪", or JSON-LD with priceCurrency "ILS".
+- If an exact pack/size is unavailable, return a close substitute and set substitution=true; compute ppu (price per unit) and explain in notes. If still unknown, drop the line.
+- Never output free text; finish by calling submit_results once.
+
+TOOLS:
+- web_search: issue focused bilingual queries with brand + size + pack and "₪", using site filters from ALLOWED_DOMAINS (e.g., site:shufersal.co.il).
+`.trim();
+
+// ===== Function Tool Schema (submit_results) =====
+const SUBMIT_RESULTS_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["status","results"],
+  properties: {
+    status: { type:"string", enum:["ok"] },
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "rank","store_name","branch_id","branch_name","address","branch_url",
+          "distance_km","currency","total_price","coverage","notes",
+          "basket","match_overall"
+        ],
+        properties: {
+          rank: { type:"integer" },
+          store_name: { type:"string" },
+          branch_id: { type:"string" },
+          branch_name: { type:"string" },
+          address: { type:"string" },
+          branch_url: { type:"string" },
+          distance_km: { type:"number" },
+          currency: { type:"string" },
+          total_price: { type:"number" },
+          coverage: { type:"number", minimum:0, maximum:1 },
+          notes: { type:["string","null"] },
+          basket: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "name","brand","quantity","size","pack_qty","unit",
+                "unit_price","ppu","line_total",
+                "product_url","source_domain","source_title",
+                "observed_price_text","observed_at","in_stock",
+                "match_confidence","substitution","notes"
+              ],
+              properties: {
+                name: { type:"string" },
+                brand: { type:["string","null"] },
+                quantity: { type:"number" },
+                size: { type:["string","null"] },
+                pack_qty: { type:["number","null"] },
+                unit: { type:["string","null"] },
+                unit_price: { type:"number" },
+                ppu: { type:["number","null"] },
+                line_total: { type:"number" },
+                product_url: { type:"string" },
+                source_domain: { type:"string" },
+                source_title: { type:["string","null"] },
+                observed_price_text: { type:["string","null"] },
+                observed_at: { type:["string","null"] },
+                in_stock: { type:"boolean" },
+                match_confidence: { type:"number", minimum:0, maximum:1 },
+                substitution: { type:"boolean" },
+                notes: { type:["string","null"] }
+              }
+            }
+          },
+          match_overall: { type:"number", minimum:0, maximum:1 }
+        }
+      }
+    }
+  }
+} as const;
+
+// ===== OpenAI Responses API =====
+async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: string){
+  if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
+
+  const body: any = {
+    model: OPENAI_MODEL,
+    instructions: systemPrompt,
+    input: userPrompt,
+    tools: [
+      { type: "web_search" },
+      {
+        type: "function",
+        name: "submit_results",
+        description: "Return final structured comparison results. MUST be called exactly once at the end.",
+        parameters: SUBMIT_RESULTS_SCHEMA
+      }
+    ],
+    tool_choice: "auto",
+    temperature: Number.isFinite(OPENAI_TEMP) ? OPENAI_TEMP : 0,
+    max_output_tokens: 2200
   };
 
-  summaryEl.textContent = `כתובת: ${payload.address} • רדיוס: ${payload.radius_km} ק״מ • מוצרים: ${payload.list_text.split(/\s+/).length} מילים`;
+  const jsonOrText = await retry(async ()=>{
+    const r = await fetchWithTimeout("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${OPENAI_KEY}`,
+        "content-type": "application/json",
+        "user-agent": UA
+      },
+      body: JSON.stringify(body)
+    }, OPENAI_TIMEOUT_MS);
+    const xrid = r.headers.get("x-request-id") || r.headers.get("openai-request-id") || null;
+    let parsed: any = null; let raw: any = null;
+    try{ raw = await r.json(); } catch{ raw = await r.text(); }
+    if (!r.ok) throw new HttpError(r.status, `OpenAI ${r.status}`, { error: (raw?.error ?? raw ?? null), full_response: raw ?? null, x_request_id: xrid });
 
+    const outputArr = Array.isArray(raw?.output) ? raw.output : [];
+    const fnCall = outputArr.find((p:any)=> p?.type==="function_call" && p?.name==="submit_results");
+    if (!fnCall) {
+      const text = (typeof raw?.output_text === "string" && raw.output_text) || (Array.isArray(outputArr) ? outputArr.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") || "";
+      const tryParsed = extractJson(text);
+      if (tryParsed) return { parsed: tryParsed, raw, request_id: xrid };
+      throw new HttpError(400, "Model did not return a submit_results tool call", { output_text_excerpt: text ? text.slice(0, SAFE_DEBUG_MAX) : "", raw_excerpt: JSON.stringify(raw ?? "").slice(0, SAFE_DEBUG_MAX), x_request_id: xrid });
+    }
+
+    try{
+      parsed = typeof fnCall.arguments === "string" ? JSON.parse(fnCall.arguments) : fnCall.arguments;
+    } catch {
+      throw new HttpError(400, "Failed to parse submit_results.arguments", { arguments_excerpt: String(fnCall?.arguments ?? "").slice(0, SAFE_DEBUG_MAX), x_request_id: xrid });
+    }
+
+    return { parsed, raw, request_id: xrid };
+  }, 2); // light retry
+
+  return jsonOrText;
+}
+
+// ===== Verification (server-side) =====
+const ALLOW = new Set([...APPROVED_DOMAINS]);
+
+function hostOK(urlStr:string){
+  try { const u = new URL(urlStr); if (!/^https?:$/.test(u.protocol)) return false; return ALLOW.has(u.hostname.replace(/^www\./,"")); }
+  catch { return false; }
+}
+
+function extractPriceFromHtml(htmlRaw:string){
+  const html = decodeHtmlEntities(htmlRaw);
+  const re = /₪\s*([\d.,]+)|([\d.,]+)\s*₪/g;
+  let num: number | null = null; let m: RegExpExecArray | null;
+  while ((m = re.exec(html))){
+    const s = (m[1] || m[2] || "").trim();
+    const v = parseNumberLocaleish(s);
+    if (!isNaN(v)) { num = v; break; }
+  }
+  if (num != null) return { value: num, source: "shekel-sign" as const };
+
+  const ilc = /"priceCurrency"\s*:\s*"(?:ILS|NIS)"/i;
+  const priceField = /"price"\s*:\s*"?(?<p>[\d.]+)"?/i;
+  if (ilc.test(html)){
+    const pMatch = priceField.exec(html);
+    if (pMatch?.groups?.p) {
+      const v = Number(pMatch.groups.p);
+      if (!isNaN(v)) return { value: v, source: "json-ld" as const };
+    }
+  }
+  return { value: null as number|null, source: "none" as const };
+}
+
+async function fetchText(url:string){
+  const res = await retry(async ()=>{
+    const r = await fetchWithTimeout(url, { redirect:"follow", headers:{"user-agent":UA} }, FETCH_TIMEOUT_MS);
+    return r;
+  }, 2);
+  const txt = await res.text().catch(()=> "");
+  return { status: res.status, text: txt.slice(0, 300_000) };
+}
+
+function approxEq(a:number,b:number,pct=0.05){
+  const d = Math.abs(a-b); return d <= Math.max(1, b*pct);
+}
+
+async function verifyItem(it:any){
+  const res:any = {
+    domain_ok:false, http_status:0, price_extracted:null as number|null, price_source:"none",
+    found_shekel:false, price_matches:false, name_match:0, notes:""
+  };
+
+  if (!hostOK(it.product_url)){ res.notes = "domain not allowed"; return res; }
+  res.domain_ok = true;
+
+  const { status, text } = await fetchText(it.product_url);
+  res.http_status = status;
+  if (status !== 200){ res.notes = "non-200"; return res; }
+
+  const { value, source } = extractPriceFromHtml(text);
+  res.price_extracted = value;
+  res.price_source = source;
+  res.found_shekel = source === "shekel-sign";
+
+  const target = typeof it.unit_price === "number" ? it.unit_price : null;
+  if (target != null && value != null){ res.price_matches = approxEq(value, target, 0.05); }
+
+  const needle = [it.brand, it.size, it.name].filter(Boolean).join(" ").replace(/\s+/g," ").trim();
+  if (needle){
+    const lc = text.toLowerCase();
+    const toks = needle.toLowerCase().split(" ").filter(t=>t.length>1);
+    const hits = toks.filter(tok => lc.includes(tok)).length;
+    res.name_match = hits / Math.max(1, toks.length);
+  }
+
+  res.notes = (res.domain_ok && res.http_status===200 && (res.found_shekel || res.price_source==="json-ld") && (res.price_matches || value==null))
+    ? "OK" : "mismatch";
+  return res;
+}
+
+async function verifyStore(store:any, approvedBranches: Map<string, any>){
+  const v:any = { approved_branch:false, verified_items:0, total_items:0, coverage_ratio:0, store_verified:false, issues:[] as string[] };
+  if (!approvedBranches.has(store.branch_id)){ v.issues.push("branch_id not approved"); return v; }
+  v.approved_branch = true;
+
+  v.total_items = Array.isArray(store.basket) ? store.basket.length : 0;
+
+  const items = (store.basket||[]);
+  const proofs = await mapPool(items, VERIFY_CONCURRENCY, async (it)=> verifyItem(it));
+
+  proofs.forEach((proof, idx)=>{
+    const it = items[idx];
+    it.verification = proof;
+    if (proof.domain_ok && proof.http_status===200 && (proof.found_shekel || proof.price_source==="json-ld")) {
+      if (typeof proof.price_extracted === "number" && typeof it.unit_price === "number") {
+        if (proof.price_matches) v.verified_items++;
+      } else {
+        v.verified_items++;
+      }
+    } else {
+      v.issues.push(`item rejected: ${it.product_url || it.name}`);
+    }
+  });
+
+  v.coverage_ratio = v.total_items ? v.verified_items / v.total_items : 0;
+  v.store_verified = v.approved_branch && v.coverage_ratio >= COVERAGE_THRESHOLD;
+
+  const approved = approvedBranches.get(store.branch_id)!;
+  store.address = approved.address;
+  store.branch_name = approved.branch_name;
+  store.branch_url = approved.branch_url;
+  store.distance_km = approved.distance_km;
+
+  store.store_verification = v;
+  return v;
+}
+
+// ===== API =====
+app.use("/api/*", cors({
+  origin: "*",
+  allowMethods: ["GET","POST","OPTIONS"],
+  allowHeaders: ["Content-Type","Authorization"]
+}));
+
+app.get("/api/health", (c)=>{
+  const id = rid();
+  const payload = {
+    ok: true,
+    model: OPENAI_MODEL,
+    temperature: Number.isFinite(OPENAI_TEMP) ? OPENAI_TEMP : 0,
+    has_openai_key: !!OPENAI_KEY,
+    has_google_places_key: !!PLACES_KEY,
+    debug_enabled: DEBUG,
+    requestId: id
+  };
+  info(id, "GET /api/health", payload);
+  return c.json(payload);
+});
+
+// DEBUG: Preview prompt + branches (no model call)
+app.get("/api/llm_preview", async (c)=>{
+  if (!DEBUG) return c.json({ status:"forbidden", message:"Enable DEBUG=true to use /api/llm_preview" }, 403);
+  const id = rid();
+  const address = cleanText(c.req.query("address") || "");
+  const radius_km = Number(c.req.query("radius_km") || "5");
+  const list_text = cleanText(c.req.query("list_text") || "");
+  if (!address || !list_text || !radius_km){
+    return c.json({ status:"need_input", needed:["address","radius_km","list_text"], requestId:id }, 400);
+  }
+  const { branches, formatted_address } = await listApprovedBranches(id, address, radius_km);
+  const userPrompt =
+`address: ${address} (geocoded: ${formatted_address})
+radius_km: ${radius_km}
+list_text: ${list_text}
+
+ALLOWED_DOMAINS: ${JSON.stringify([...APPROVED_DOMAINS])}
+
+APPROVED_BRANCHES (JSON):
+${JSON.stringify(branches, null, 2)}
+
+INSTRUCTIONS:
+- Choose branches ONLY from APPROVED_BRANCHES by branch_id.
+- Prices ONLY from ALLOWED_DOMAINS with "₪" in page or JSON-LD ILS.
+- If no exact pack, use substitute (substitution=true) with ppu and notes.
+- Return ONE function call (submit_results). No free text.`;
+  return c.json({ status:"ok", debug:{ instructions: PROMPT_SYSTEM, user_input: userPrompt }, requestId: id });
+});
+
+// Main search
+app.post("/api/search", async (c)=>{
+  const id = rid();
   try{
-    const res = await fetch('/api/search', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const body = await c.req.json().catch(()=> ({}));
+    info(id, "POST /api/search body", body);
 
-    loadingEl.style.display = 'none';
-    if (isDebug) debugJson.textContent = JSON.stringify(data, null, 2);
+    let address   = cleanText(String(body?.address ?? "").trim(), 200);
+    const radius_km = Math.max(1, Number(body?.radius_km ?? 0));
+    let list_text = cleanText(String(body?.list_text ?? "").trim(), 800);
+    const show_all  = !!body?.show_all;
 
-    if(!res.ok){
-      resultsEl.innerHTML = row(`שגיאת שרת (${res.status})`, data.message || 'לא ידוע');
-      console.error("API error", data);
-      return;
-    }
-    if(data.status!=='ok' || !Array.isArray(data.results) || data.results.length===0){
-      resultsEl.innerHTML = row('לא נמצאו תוצאות', data.message || 'נסו לדייק מותג/נפח, להגדיל רדיוס, או לנסות מיקום סמוך');
-      return;
+    const miss:string[]=[];
+    if(!address)   miss.push("address");
+    if(!radius_km) miss.push("radius_km");
+    if(!list_text) miss.push("list_text");
+    if (miss.length){
+      return c.json({ status:"need_input", needed: miss, requestId:id }, 400);
     }
 
-    resultsEl.innerHTML = data.results.map(renderStore).join('');
+    // 1) Branches
+    const { branches, formatted_address } = await listApprovedBranches(id, address, radius_km);
+    const approvedMap = new Map<string, Branch>(branches.map(b => [b.branch_id, b]));
 
-  }catch(err){
-    loadingEl.style.display = 'none';
-    resultsEl.innerHTML = row('שגיאת רשת', err.message || String(err));
-    console.error("Network error", err);
+    // 2) Prompt
+    const basePrompt =
+`address: ${address} (geocoded: ${formatted_address})
+radius_km: ${radius_km}
+list_text: ${list_text}
+
+ALLOWED_DOMAINS: ${JSON.stringify([...APPROVED_DOMAINS])}
+
+APPROVED_BRANCHES (JSON):
+${JSON.stringify(branches, null, 2)}
+
+ENFORCEMENTS:
+- Choose branches ONLY from APPROVED_BRANCHES by branch_id.
+- Prices ONLY from ALLOWED_DOMAINS with "₪" in the page, or JSON-LD ILS.
+- If exact item unavailable, use nearest substitute (substitution=true) with ppu and notes.
+- Return ONE function call (submit_results). No free text.`;
+
+    // 3) LLM
+    const first = await callOpenAIOnce(PROMPT_SYSTEM, basePrompt, id);
+
+    // 4) Verify results
+    const parsed = first.parsed as any;
+    if (!parsed?.results || !Array.isArray(parsed.results)) {
+      throw new HttpError(400, "Bad results shape from model", { openai_request_id: first.request_id });
+    }
+
+    const issues: string[] = [];
+    // Verify stores sequentially (per store), items inside are parallelized
+    for (const s of parsed.results) {
+      const v = await verifyStore(s, approvedMap);
+      if (!v.store_verified) issues.push(`store not verified (branch=${s.branch_id}): ${v.issues.join("; ")}`);
+    }
+
+    const verifiedOnly = parsed.results.filter((s:any)=> s.store_verification?.store_verified);
+    const finalResults = show_all ? parsed.results : verifiedOnly;
+
+    // Sort & rank
+    finalResults.sort((a:any,b:any)=> (a.total_price??999999) - (b.total_price??999999));
+    finalResults.forEach((r:any,i:number)=> r.rank = i+1);
+
+    const payload:any = { status:"ok", results: finalResults, requestId:id, openai_request_id: first.request_id ?? undefined };
+    if (DEBUG || body?.include_debug) payload.debug = {
+      issues,
+      approved_branches_count: branches.length,
+      openai_raw_excerpt: JSON.stringify(first.raw).slice(0, SAFE_DEBUG_MAX)
+    };
+    return c.json(payload, 200);
+
+  }catch(e:any){
+    const status = typeof e?.status === "number" ? e.status : 500;
+    const message = e?.message || String(e);
+    const payload:any = { status:"error", message, requestId:id };
+    if (e?.payload) payload.details = e.payload;
+    err(id, "search handler failed", { status, message, details: e?.payload });
+    return c.json(payload, status);
   }
 });
 
-function renderStore(r){
-  const total = toPrice(r.total_price, r.currency || "₪");
-  const mo = (typeof r.match_overall === 'number') ? `${Math.round(r.match_overall*100)}%` : '—';
-  const cover = (typeof r.coverage === 'number') ? `${Math.round(r.coverage*100)}%` : '—';
+// ===== Static UI =====
+app.use("/public/*", serveStatic({ root:"./" }));
+app.use("/assets/*", serveStatic({ root:"./" }));
 
-  const storeVer = r.store_verification || {};
-  const verified = !!storeVer.store_verified;
-  const badge = verified ? `<span class="pill good">מאומת</span>` : `<span class="pill bad">לא מאומת</span>`;
-
-  const basketRows = Array.isArray(r.basket) ? r.basket.map(b=>{
-    const unit = toPrice(b.unit_price, r.currency || "₪");
-    const line = toPrice(b.line_total, r.currency || "₪");
-    const brand = b.brand ? ` <span class="muted">• ${esc(b.brand)}</span>` : '';
-    const src = b.product_url ? `<div class="muted"><a href="${escAttr(b.product_url)}" target="_blank" rel="noopener">מקור</a>${b.source_domain? ' • '+esc(b.source_domain):''}${b.observed_price_text? ' • '+esc(b.observed_price_text): ''}</div>` : '';
-
-    const v = b.verification || {};
-    const vline = `<div class="small ${v.notes==='OK'?'good':'bad'}">
-      אימות: דומיין ${v.domain_ok?'✅':'❌'} • סטטוס ${v.http_status||0} • ₪/${v.price_source||'-'} ${v.found_shekel?'✅':'❌'} • התאמת מחיר ${v.price_matches?'✅':'❌'} • התאמת שם ~${Math.round((v.name_match||0)*100)}%
-    </div>`;
-
-    const sub = b.substitution ? ` <span class="pill">תחליף</span>` : '';
-
-    return `
-      <div class="row">
-        <div>
-          <div><strong>${esc(b.name||'')}</strong>${brand}${sub}</div>
-          <div class="muted" style="font-size:12px">כמות: ${esc(b.quantity??'')} • נפח/גודל: ${esc(b.size||'-')} • יח': ${esc(b.pack_qty??'-')}</div>
-          ${src}${vline}
-        </div>
-        <div class="total">${line}</div>
-      </div>`;
-  }).join('') : '';
-
-  const hdr = `
-  <div class="row">
-    <div>
-      <div><strong>#${esc(r.rank||'?')} — ${esc(r.store_name||'')}</strong> ${badge}</div>
-      <div class="muted small">${esc(r.branch_name||'')} • ${esc(r.address||'')} • ${esc(r.distance_km||'')} ק״מ • דיוק כללי ${mo} • כיסוי ${cover}</div>
-      ${r.branch_url ? `<div class="small"><a href="${escAttr(r.branch_url)}" target="_blank" rel="noopener">דף הסניף / מפות</a></div>` : ''}
-      ${r.notes ? `<div class="muted small">${esc(r.notes)}</div>` : ''}
-    </div>
-    <div class="total">${total}</div>
-  </div>
-  `;
-
-  return hdr + `<details class="box" style="margin-top:10px"><summary>פירוט סל</summary><div style="height:8px"></div>${basketRows}</details>`;
+async function tryIndex(): Promise<string|null> {
+  try { return await Deno.readTextFile("./public/index.html"); }
+  catch { return null; }
 }
 
-function renderSkeleton(){ resultsEl.innerHTML=''; loadingEl.style.display='block'; }
-function row(title, msg){ return `<div class="row"><div><strong>${esc(title)}</strong><div class="muted" style="font-size:12px">${esc(msg)}</div></div></div>`; }
-function shake(el){ el.style.borderColor='#ffb4b4'; el.animate([{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],{duration:260}); setTimeout(()=>el.style.borderColor='#e6edf7',320); }
-function esc(s){return String(s??'').replace(/[&<>"'`=\/]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","/":"&#x2F;","`":"&#x60;","=":"&#x3D;"}[c]))}
-function escAttr(s){return String(s??'').replace(/"/g,'&quot;')}
-function toPrice(v, currency){
-  if (typeof v === "number") return v.toFixed(2)+" "+currency;
-  if (typeof v === "string" && v.trim()) return v.includes("₪") ? v : (v+" "+currency);
-  return "—";
-}
-</script>
-</body>
-</html>
+app.get("/", async (c)=>{
+  const id = rid();
+  const html = await tryIndex();
+  if (html){
+    info(id, "Serving ./public/index.html");
+    return c.newResponse(html, 200, { "content-type":"text/html; charset=utf-8" });
+    }
+  return c.newResponse(
+    "<!doctype html><meta charset=utf-8><title>CartCompare AI</title><p>Upload <code>public/index.html</code> to show the UI.</p>",
+    200
+  );
+});
+
+app.notFound(async (c)=>{
+  const html = await tryIndex();
+  return c.newResponse(html ?? "<p>Not found</p>", 404, { "content-type":"text/html; charset=utf-8" });
+});
+
+Deno.serve(app.fetch);
