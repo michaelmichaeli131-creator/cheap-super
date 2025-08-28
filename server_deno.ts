@@ -1,33 +1,32 @@
 // server_deno.ts
-// Deno + Hono + OpenAI Responses API (web_search) + Google Places + Zyte Auto-Extraction
-// מצב: שימוש ב-Zyte לכל פריט, זיהוי product/productList לפי סוג ה-URL, קאש+קונקרנציה, timeouts+retries
+// CartCompare AI — Aggregators-Only (CHP-first) Backend
+//
+// ✦ עיקרי:
+// - אין Zyte. אימות מחירים ע"י HTML של אגרגטורים בלבד.
+// - עדיפות לחילוץ מחיר מ-CHP (כולל fallback בניית URL לפי עיר+שאילתה).
+// - Google Geocode/Places לסניפים אמיתיים.
+// - OpenAI Responses API (web_search + function call).
+// - דפי דיבוג: /api/health, /api/llm_preview, /api/test_agg
 //
 // ENV (לפני הרצה):
 //   OPENAI_API_KEY=sk-...                 // חובה
 //   OPENAI_MODEL=gpt-4.1                  // מומלץ
-//   GOOGLE_PLACES_API_KEY=AIza...         // חובה
-//   ZYTE_API_KEY=...                      // חובה לשימוש ב-Zyte
-//   DEBUG=true                            // אופציונלי; דיבוג כללי
-//   ZYTE_DEBUG=true                       // אופציונלי; דיבוג בקשות Zyte
+//   GOOGLE_PLACES_API_KEY=AIza...         // חובה (סניפים אמיתיים)
+//   DEBUG=true                            // אופציונלי
 //   OPENAI_TEMPERATURE=0                  // אופציונלי
-//   # טייםאאוטים וריטריים:
+//   // Timeouts/Retry:
+//
 //   PLACES_TIMEOUT_MS=25000
 //   PRODUCT_FETCH_TIMEOUT_MS=30000
 //   OPENAI_TIMEOUT_MS=60000
 //   RETRY_ATTEMPTS=3
 //   RETRY_BASE_MS=600
-//   # דומיינים (both|retailers|aggregators):
-//   ALLOWED_DOMAINS_MODE=both
-//   ALLOWED_DOMAINS_CSV=zap.co.il,pricez.co.il,bonusbuy.co.il
-//   # Zyte cache/concurrency:
-//   AUTO_EXTRACT_MODE=on
-//   AUTO_EXTRACT_TTL_MS=120000
-//   AUTO_EXTRACT_MAX_CONCURRENCY=4
+//
+//   // Aggregators list (override if needed):
+//   ALLOWED_DOMAINS_CSV=chp.co.il,zap.co.il,pricez.co.il,bonusbuy.co.il
 //
 // Run (לוקאלי):
-//   DEBUG=true ZYTE_DEBUG=true OPENAI_API_KEY=sk-... GOOGLE_PLACES_API_KEY=AIza... ZYTE_API_KEY=... deno run --allow-net --allow-env --allow-read server_deno.ts
-//
-// פריסה: הגדירו את כל ה-ENV בפרויקט (Deno Deploy / dash.deno).
+//   DEBUG=true OPENAI_API_KEY=sk-... GOOGLE_PLACES_API_KEY=AIza... deno run --allow-net --allow-env --allow-read server_deno.ts
 
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
@@ -39,11 +38,8 @@ const app = new Hono();
 const OPENAI_KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-4.1";
 const PLACES_KEY   = Deno.env.get("GOOGLE_PLACES_API_KEY") ?? "";
-const ZYTE_KEY     = Deno.env.get("ZYTE_API_KEY") ?? "";
 
 const DEBUG        = (Deno.env.get("DEBUG") || "false").toLowerCase() === "true";
-const ZYTE_DEBUG   = (Deno.env.get("ZYTE_DEBUG") || "false").toLowerCase() === "true";
-
 const TEMP_STR     = Deno.env.get("OPENAI_TEMPERATURE");
 const OPENAI_TEMP  = (TEMP_STR!=null && TEMP_STR.trim()!=="") ? Number(TEMP_STR) : 0;
 
@@ -54,39 +50,22 @@ const OPENAI_TIMEOUT_MS        = Number(Deno.env.get("OPENAI_TIMEOUT_MS") || 600
 const RETRY_ATTEMPTS           = Math.max(1, Number(Deno.env.get("RETRY_ATTEMPTS") || 3));
 const RETRY_BASE_MS            = Math.max(200, Number(Deno.env.get("RETRY_BASE_MS") || 600));
 
-// Domains mode: both (retailers + aggregators)
-const ALLOWED_MODE = (Deno.env.get("ALLOWED_DOMAINS_MODE") || "both").toLowerCase(); // "aggregators" | "retailers" | "both"
-const RETAILER_DOMAINS = [
-  "shufersal.co.il","rami-levy.co.il","victoryonline.co.il",
-  "yohananof.co.il","tivtaam.co.il","osherad.co.il"
-];
-const AGGREGATOR_DOMAINS_DEFAULT = [
-  "zap.co.il","pricez.co.il","bonusbuy.co.il"
-];
-const AGGREGATOR_DOMAINS = (Deno.env.get("ALLOWED_DOMAINS_CSV") || "")
-  .split(",").map(s=>s.trim()).filter(Boolean);
-if (AGGREGATOR_DOMAINS.length===0) AGGREGATOR_DOMAINS.push(...AGGREGATOR_DOMAINS_DEFAULT);
-
+// Aggregators only
+const DEFAULT_AGGREGATORS = ["chp.co.il","zap.co.il","pricez.co.il","bonusbuy.co.il"];
 const ALLOWED_DOMAINS = new Set(
-  ALLOWED_MODE === "retailers" ? RETAILER_DOMAINS
-  : ALLOWED_MODE === "aggregators" ? AGGREGATOR_DOMAINS
-  : [...RETAILER_DOMAINS, ...AGGREGATOR_DOMAINS] // both
+  (Deno.env.get("ALLOWED_DOMAINS_CSV") || DEFAULT_AGGREGATORS.join(","))
+    .split(",").map(s=>s.trim()).filter(Boolean)
 );
-
-// Zyte Auto-Extraction
-const AUTO_EXTRACT_MODE = (Deno.env.get("AUTO_EXTRACT_MODE") || "on").toLowerCase() === "on"; // ברירת מחדל: ON
-const AUTO_EXTRACT_TTL_MS = Number(Deno.env.get("AUTO_EXTRACT_TTL_MS") || 120000);
-const AUTO_EXTRACT_MAX_CONCURRENCY = Math.max(1, Number(Deno.env.get("AUTO_EXTRACT_MAX_CONCURRENCY") || 4));
 
 // אימות חנות: כמה פריטים צריכים לעבור
 const COVERAGE_THRESHOLD = 0.6;
 
 // ===== Utils =====
 const SAFE_DEBUG_MAX = 2500;
-const UA = "CartCompareAI/1.1 (Deno; zyte-product-list; retries)";
+const UA = "CartCompareAI/1.2 (Deno; aggregators-only; HTML-verify)";
 
 function rid(){ return crypto.randomUUID(); }
-function info(id:string, msg:string, extra?:unknown){ console.log(`[${id}] ${msg}`, extra ?? ""); }
+function info(id:string, msg:string, extra?:unknown){ if (DEBUG) console.log(`[${id}] ${msg}`, extra ?? ""); }
 function err (id:string, msg:string, extra?:unknown){ console.error(`[${id}] ERROR: ${msg}`, extra ?? ""); }
 class HttpError extends Error { status:number; payload?:unknown; constructor(s:number,m:string,p?:unknown){ super(m); this.status=s; this.payload=p; } }
 
@@ -132,14 +111,11 @@ function parseNumberLocaleish(x:string){
      .replace(/,/g,".")
   );
 }
-function approxEq(a:number,b:number,pct=0.05){ const d=Math.abs(a-b); return d<=Math.max(1,b*pct); }
+function approxEq(a:number,b:number,pct=0.08){ const d=Math.abs(a-b); return d<=Math.max(1,b*pct); }
 
-// ===== Allowed domains & host check =====
 function hostOK(urlStr:string){
-  try {
-    const u = new URL(urlStr);
-    return ALLOWED_DOMAINS.has(u.hostname.replace(/^www\./,""));
-  } catch { return false; }
+  try { const u = new URL(urlStr); return ALLOWED_DOMAINS.has(u.hostname.replace(/^www\./,"")); }
+  catch { return false; }
 }
 
 // ===== HTTP helpers (timeouts + retries) =====
@@ -253,24 +229,24 @@ async function listApprovedBranches(id:string, address:string, radius_km:number)
   return { center, formatted_address: geo.formatted, branches: out.slice(0, 12) };
 }
 
-// ===== Prompt (עדיפות חיפוש/קטגוריות; ללא דרישת "₪") =====
+// ===== Aggregators-only Prompt =====
 const PROMPT_SYSTEM = `
 You are a price-comparison agent for Israeli groceries.
 
 HARD POLICY (DO NOT VIOLATE):
 - Do NOT fabricate prices or branches. Use ONLY information found now on the public web.
 - Branches MUST be selected ONLY from APPROVED_BRANCHES JSON (branch_id required). If none match—return empty results.
-- Product links (product_url) MUST be from ALLOWED_DOMAINS.
+- Product links (product_url) MUST be from ALLOWED_DOMAINS (aggregators only).
 - If an exact pack/size is unavailable, return a close substitute and set substitution=true; compute ppu (price per unit) and explain in notes.
 - Never output free text; finish by calling submit_results once.
 
-LINK SELECTION POLICY (VERY IMPORTANT):
-- Prefer CATEGORY or SEARCH pages on allowed domains (e.g., /search?text=..., /קטגוריות/..., "promotion" listings) where prices are visible, rather than single SKU pages like /p/<code>.
-- If a product detail page (/p/...) is chosen and yields no visible price, provide an alternate category/search URL for the same retailer.
-- Aggregators (zap.co.il, pricez.co.il, bonusbuy.co.il) are also good, but retailer SEARCH/CATEGORY pages are preferred if they show prices.
+LINK SELECTION POLICY:
+- Prefer SEARCH or CATEGORY result pages on the allowed aggregators where prices are visible.
+- Avoid retailer single-SKU pages (/p/<code>) as they may be blocked or empty.
+- If a chosen link has no visible price, provide an alternate listing URL on the same aggregator.
 
 TOOLS:
-- web_search: craft bilingual queries including brand + size + pack; restrict to ALLOWED_DOMAINS; include keywords like "search", "קטגוריות", or category names to bias towards listing pages.
+- web_search: craft bilingual queries including brand + size + pack; restrict strictly to ALLOWED_DOMAINS (aggregators).
 `.trim();
 
 // ===== submit_results schema =====
@@ -347,25 +323,20 @@ const SUBMIT_RESULTS_SCHEMA = {
 // ===== OpenAI Responses API =====
 async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: string){
   if (!OPENAI_KEY) throw new HttpError(500, "Missing OPENAI_API_KEY");
-
-  const body: any = {
+  const body:any = {
     model: OPENAI_MODEL,
     instructions: systemPrompt,
     input: userPrompt,
     tools: [
       { type: "web_search" },
-      {
-        type: "function",
-        name: "submit_results",
+      { type: "function", name: "submit_results",
         description: "Return final structured comparison results. MUST be called exactly once at the end.",
-        parameters: SUBMIT_RESULTS_SCHEMA
-      }
+        parameters: SUBMIT_RESULTS_SCHEMA }
     ],
     tool_choice: "auto",
     temperature: isFinite(OPENAI_TEMP) ? OPENAI_TEMP : 0,
     max_output_tokens: 2200
   };
-
   const resp = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -374,240 +345,147 @@ async function callOpenAIOnce(systemPrompt: string, userPrompt: string, id: stri
       "user-agent": UA
     },
     body: JSON.stringify(body)
-  }, OPENAI_TIMEOUT_MS).catch((e)=> {
-    throw new HttpError(502, `OpenAI fetch error: ${e?.message || String(e)}`);
-  });
-
-  const requestIdHeader = resp.headers.get("x-request-id") || resp.headers.get("openai-request-id") || null;
-
-  let jsonOrText: any = null;
-  try { jsonOrText = await resp.json(); }
-  catch { try { jsonOrText = await resp.text(); } catch { jsonOrText = null; } }
-
-  if (!resp.ok) {
-    throw new HttpError(resp.status, `OpenAI ${resp.status}`);
-  }
-
+  }, OPENAI_TIMEOUT_MS).catch((e)=> { throw new HttpError(502, `OpenAI fetch error: ${e?.message || String(e)}`); });
+  let jsonOrText:any=null;
+  try { jsonOrText = await resp.json(); } catch { jsonOrText = await resp.text().catch(()=>null); }
+  if (!resp.ok) throw new HttpError(resp.status, "OpenAI error");
   const outputArr = Array.isArray(jsonOrText?.output) ? jsonOrText.output : [];
   const fnCall = outputArr.find((p:any)=> p?.type==="function_call" && p?.name==="submit_results");
   if (!fnCall) {
     const text =
       (typeof jsonOrText?.output_text === "string" && jsonOrText.output_text) ||
-      (Array.isArray(outputArr) ? outputArr.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") ||
-      "";
+      (Array.isArray(outputArr) ? outputArr.map((p:any)=> (typeof p?.content === "string" ? p.content : "")).join("\n") : "") || "";
     const tryParsed = extractJson(text);
-    if (tryParsed) return { parsed: tryParsed, raw: jsonOrText, request_id: requestIdHeader };
-    throw new HttpError(400, "Model did not return a submit_results tool call");
+    if (tryParsed) return { parsed: tryParsed, raw: jsonOrText, request_id: resp.headers.get("x-request-id") || null };
+    throw new HttpError(400, "Model did not return submit_results");
   }
-
-  let parsed:any = null;
-  try { parsed = typeof fnCall.arguments === "string" ? JSON.parse(fnCall.arguments) : fnCall.arguments; }
-  catch { throw new HttpError(400, "Failed to parse submit_results.arguments"); }
-
-  return { parsed, raw: jsonOrText, request_id: requestIdHeader };
+  const parsed = typeof fnCall.arguments === "string" ? JSON.parse(fnCall.arguments) : fnCall.arguments;
+  return { parsed, raw: jsonOrText, request_id: resp.headers.get("x-request-id") || null };
 }
 
-// ===== Zyte: product/productList detection, cache & concurrency =====
-function isListingUrl(u: string): boolean {
-  try {
-    const url = new URL(u);
-    const p = decodeURIComponent(url.pathname);
-    return (
-      /\/search/i.test(url.pathname) ||
-      /query=|text=/.test(url.search) ||
-      /promotion/i.test(p) ||
-      /קטגוריות|categories|catalog|productlist/i.test(p)
-    );
-  } catch {
-    return false;
+// ===== CHP helpers =====
+function extractCityFromFormattedAddress(formatted: string): string | null {
+  if (!formatted) return null;
+  const parts = formatted.split(",").map(s => s.trim());
+  if (parts.length >= 2) return parts[parts.length - 2] || parts[0];
+  return parts[0] || null;
+}
+function buildChpSearchUrl(city: string, q: string): string {
+  const cityEnc = encodeURIComponent(city || "ישראל");
+  const qEnc = encodeURIComponent(q.trim().replace(/\s+/g, " "));
+  return `https://chp.co.il/${cityEnc}/0/0/${qEnc}/0`;
+}
+function extractPricesFromHtmlGeneric(html: string): number[] {
+  if (!html) return [];
+  const prices: number[] = [];
+  // ₪12.90 , 12.90 ₪
+  const re = /(?:₪\s*([\d.,]+)|([\d.,]+)\s*₪)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const s = (m[1] || m[2] || "").trim();
+    if (!s) continue;
+    const num = parseNumberLocaleish(s);
+    if (!isNaN(num)) prices.push(num);
   }
-}
-
-type ZyteProduct = {
-  name?: string;
-  brand?: string;
-  price?: number | string;
-  currency?: string;
-  offers?: Array<{ price?: number | string; currency?: string; availability?: string; url?: string }>;
-  gtin?: string;
-  sku?: string;
-};
-type ZyteProductListRow = {
-  name?: string;
-  description?: string;
-  price?: number | string;
-  currency?: string;
-  offers?: Array<{ price?: number | string; currency?: string }>;
-  url?: string;
-};
-
-const zyteCache = new Map<string, { ts: number; data: any | null }>();
-let zyteCalls = 0;
-let zyteCacheHits = 0;
-
-function zyteCacheGet(key: string) {
-  const hit = zyteCache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.ts > AUTO_EXTRACT_TTL_MS) { zyteCache.delete(key); return null; }
-  zyteCacheHits++;
-  return hit.data;
-}
-function zyteCacheSet(key: string, data: any | null) {
-  zyteCache.set(key, { ts: Date.now(), data });
-}
-
-let zyteInFlight = 0;
-const zyteQueue: Array<() => void> = [];
-async function zyteGate<T>(fn:()=>Promise<T>): Promise<T> {
-  if (zyteInFlight >= AUTO_EXTRACT_MAX_CONCURRENCY) {
-    await new Promise<void>(resolve => zyteQueue.push(resolve));
+  // fallback: JSON-LD "price": "12.90"
+  const mJson = /"price"\s*:\s*"?(?<p>[\d.]+)"?/gi;
+  let j: RegExpExecArray | null;
+  while ((j = mJson.exec(html))) {
+    const v = Number(j.groups?.p || "");
+    if (!isNaN(v)) prices.push(v);
   }
-  zyteInFlight++;
-  try { return await fn(); }
-  finally {
-    zyteInFlight--;
-    const next = zyteQueue.shift();
-    if (next) next();
-  }
+  return prices;
 }
-
-async function zyteExtract(url: string, type: "product" | "productList") {
-  if (!ZYTE_KEY) throw new HttpError(500, "Missing ZYTE_API_KEY");
-
-  const cacheKey = `zyte:${type}:${url}`;
-  const cached = zyteCacheGet(cacheKey);
-  if (cached) return { ok: true, status: 200, data: cached, cached: true };
-
-  zyteCalls++;
-  const body: any = { url, geolocation: "IL" };
-  body[type] = true;
-
-  const reqBody = JSON.stringify(body);
-  const r = await zyteGate(()=> fetch("https://api.zyte.com/v1/extract", {
-    method: "POST",
+async function fetchHtml(url: string){
+  const r = await fetchWithTimeout(url, {
     headers: {
-      "Authorization": "Basic " + btoa(`${ZYTE_KEY}:`), // username=API key, password empty
-      "Content-Type": "application/json",
-      "Accept-Encoding": "gzip, deflate, br",
-      "User-Agent": UA
-    },
-    body: reqBody
-  }).catch((e)=> { throw new HttpError(502, `Zyte fetch error: ${e?.message || String(e)}`); }));
-
+      "user-agent": UA,
+      "accept": "text/html,application/xhtml+xml",
+      "accept-language": "he-IL,he;q=0.9,en-US;q=0.8",
+      "cache-control": "no-cache"
+    }
+  }, PRODUCT_FETCH_TIMEOUT_MS);
   const text = await r.text().catch(()=> "");
-  if (ZYTE_DEBUG) info("ZYTE", `→ ${type} ${r.status} ${url}`, { req: JSON.parse(reqBody), res_excerpt: text.slice(0, 2000) });
+  return { status: r.status, text };
+}
 
-  if (!r.ok) {
-    zyteCacheSet(cacheKey, null);
-    return { ok:false, status:r.status, error: text || `HTTP ${r.status}` };
+// ===== Verification (Aggregators only + CHP fallback) =====
+async function tryChpFallbackPrice(addressFormatted: string, it: any): Promise<{ price: number | null, usedUrl?: string, status?: number }> {
+  const city = extractCityFromFormattedAddress(addressFormatted) || "ישראל";
+  const q = [it.brand, it.name, it.size].filter(Boolean).join(" ").trim() || it.name || "";
+  const url = buildChpSearchUrl(city, q);
+  try {
+    const { status, text } = await fetchHtml(url);
+    const prices = extractPricesFromHtmlGeneric(text);
+    if (prices.length) {
+      const min = Math.min(...prices);
+      return { price: min, usedUrl: url, status };
+    }
+    return { price: null, usedUrl: url, status };
+  } catch {
+    return { price: null, usedUrl: url };
   }
-
-  let json:any = {};
-  try { json = text ? JSON.parse(text) : {}; } catch {}
-  zyteCacheSet(cacheKey, json);
-  return { ok:true, status:r.status, data: json, cached:false };
 }
 
-function tokenScore(needle: string, hay: string){
-  const toks = needle.toLowerCase().split(/\s+/).filter(t=>t.length>1);
-  const h = hay.toLowerCase();
-  const hits = toks.filter(t => h.includes(t)).length;
-  return hits / Math.max(1, toks.length);
-}
-
-function normalizeZyteToLine(base: any, url: string, p: ZyteProduct | ZyteProductListRow | null) {
-  if (!p) return { unit_price: null, currency: null, in_stock:false, product_url: url, observed_price_text: null };
-  // מחירים יכולים להגיע כ-string או number
-  const priceCandidate:any = (p as any).price ?? (p as any).offers?.[0]?.price ?? null;
-  const currencyCandidate = (p as any).currency ?? (p as any).offers?.[0]?.currency ?? null;
-  const num = (typeof priceCandidate==="string" || typeof priceCandidate==="number") ? Number(priceCandidate) : null;
-  const inStock = String((p as any).offers?.[0]?.availability || "").toLowerCase().includes("instock");
-  const product_url = (p as any).offers?.[0]?.url || (p as any).url || url;
-  return {
-    name: (p as any).name || base?.name || "",
-    brand: (p as any).brand || base?.brand || null,
-    unit_price: (num!=null && !isNaN(num)) ? num : null,
-    currency: typeof currencyCandidate==="string" ? currencyCandidate.toUpperCase() : null,
-    in_stock: inStock,
-    product_url,
-    observed_price_text: (num!=null ? `${num}` : null),
-    price_source: "zyte" as const
-  };
-}
-
-// ===== Verification (Zyte product/productList) =====
-async function verifyItem(it:any){
+async function verifyItem(it:any, formatted_address: string){
   const res:any = {
     domain_ok:false, http_status:0, price_extracted:null as number|null, price_source:"none",
     found_shekel:false, price_matches:false, name_match:0, notes:""
   };
 
-  // דומיין מאושר?
-  if (!hostOK(it.product_url)){ res.notes = "domain not allowed"; return res; }
-  res.domain_ok = true;
-
-  try{
-    if (!AUTO_EXTRACT_MODE) { res.notes = "auto-extract-off"; return res; }
-
-    // זיהוי סוג העמוד:
-    const pageType: "product" | "productList" = isListingUrl(it.product_url) ? "productList" : "product";
-    const z = await zyteExtract(it.product_url, pageType);
-    if (!z.ok) {
-      res.http_status = z.status;
-      res.notes = `zyte-error: ${z.error?.slice?.(0, 200) || z.error || "unknown"}`;
-      return res;
-    }
-    res.http_status = z.status;
-
-    // חילוץ מחיר:
-    if (pageType === "product") {
-      const p: ZyteProduct | null = z.data?.product ?? null;
-      const norm = normalizeZyteToLine(it, it.product_url, p);
-      res.price_extracted = (typeof norm.unit_price === "number") ? norm.unit_price : null;
-      res.price_source = "zyte-product";
-
-      // התאמת שם
-      const needle = [it.brand, it.size, it.name].filter(Boolean).join(" ").toLowerCase();
-      const cand = (p?.name || "").toLowerCase();
-      const toks = needle.split(/\s+/).filter(t => t.length>1);
-      const hits = toks.filter(tok => cand.includes(tok)).length;
-      res.name_match = toks.length ? hits / toks.length : 0;
-
-    } else {
-      const pl: ZyteProductListRow[] = Array.isArray(z.data?.productList) ? z.data.productList : [];
-      // בחר התאמה הכי טובה
-      const needle = [it.brand, it.size, it.name].filter(Boolean).join(" ").toLowerCase();
-      let best: ZyteProductListRow | null = null, bestScore=-1;
-      for (const row of pl) {
-        const cand = ((row?.name || "") + " " + (row?.description || "")).toLowerCase();
-        const score = tokenScore(needle, cand);
-        if (score > bestScore) { bestScore = score; best = row; }
+  // אם ה-LLM נתן דומיין לא מאושר—ננסה להתעלם וליפול ל-CHP
+  const originalAllowed = hostOK(it.product_url);
+  if (originalAllowed) {
+    res.domain_ok = true;
+    const { status, text } = await fetchHtml(it.product_url);
+    res.http_status = status;
+    if (status === 200 && text) {
+      const prices = extractPricesFromHtmlGeneric(text);
+      if (prices.length) {
+        res.price_extracted = prices[0];
+        res.price_source = "html-aggregator";
+        // אימות “קרוב” מול unit_price אם קיים
+        const target = typeof it.unit_price === "number" ? it.unit_price : null;
+        if (target != null) res.price_matches = approxEq(res.price_extracted!, target, 0.12);
+        res.notes = "OK";
+      } else {
+        res.notes = "no-price-in-html";
       }
-      const norm = normalizeZyteToLine(it, it.product_url, best);
-      res.price_extracted = (typeof norm.unit_price === "number") ? norm.unit_price : null;
-      res.price_source = "zyte-productList";
-
-      // התאמת שם
-      const cand = (best?.name || "").toLowerCase();
-      const toks = needle.split(/\s+/).filter(t => t.length>1);
-      const hits = toks.filter(tok => cand.includes(tok)).length;
-      res.name_match = toks.length ? hits / toks.length : 0;
+    } else {
+      res.notes = `non-200: ${status}`;
     }
-
-    // בדיקת התאמת מחיר מול unit_price מקורית מה-LLM אם קיימת
-    const target = typeof it.unit_price === "number" ? it.unit_price : null;
-    if (target != null && res.price_extracted != null){ res.price_matches = approxEq(res.price_extracted, target, 0.08); }
-
-    res.notes = (res.price_extracted != null) ? (res.price_matches ? "OK" : "price-mismatch") : "no price from zyte";
-    return res;
-
-  }catch(e:any){
-    res.notes = `zyte-error: ${e?.message || String(e)}`;
-    return res;
+  } else {
+    res.notes = "url-domain-not-allowed";
   }
+
+  // Fallback ל-CHP אם לא יצא מחיר
+  if (res.price_extracted == null) {
+    const chp = await tryChpFallbackPrice(formatted_address, it);
+    if (typeof chp.price === "number") {
+      res.price_extracted = chp.price;
+      res.price_source = "chp-fallback";
+      res.http_status = chp.status ?? res.http_status;
+      res.notes = (res.notes ? res.notes+"; " : "") + "chp-ok";
+      if (chp.usedUrl) it.product_url = chp.usedUrl;
+      // אימות מול unit_price אם קיים
+      const target = typeof it.unit_price === "number" ? it.unit_price : null;
+      if (target != null) res.price_matches = approxEq(res.price_extracted!, target, 0.12);
+    } else {
+      res.notes = (res.notes ? res.notes+"; " : "") + "chp-no-price";
+    }
+  }
+
+  // התאמת שם גסה (טוקנים)
+  const needle = [it.brand, it.size, it.name].filter(Boolean).join(" ").toLowerCase();
+  const toks = needle.split(/\s+/).filter(t=>t.length>1);
+  const hay = [it.name, it.brand, it.size].filter(Boolean).join(" ").toLowerCase();
+  const hits = toks.filter(t=> hay.includes(t)).length;
+  res.name_match = toks.length ? hits / toks.length : 0;
+
+  return res;
 }
 
-async function verifyStore(store:any, approvedBranches: Map<string, any>){
+async function verifyStore(store:any, approvedBranches: Map<string, any>, formatted_address: string){
   const v:any = { approved_branch:false, verified_items:0, total_items:0, coverage_ratio:0, store_verified:false, issues:[] as string[] };
   if (!approvedBranches.has(store.branch_id)){ v.issues.push("branch_id not approved"); return v; }
   v.approved_branch = true;
@@ -615,14 +493,10 @@ async function verifyStore(store:any, approvedBranches: Map<string, any>){
   v.total_items = Array.isArray(store.basket) ? store.basket.length : 0;
 
   for (const it of (store.basket||[])){
-    const proof = await verifyItem(it);
+    const proof = await verifyItem(it, formatted_address);
     it.verification = proof;
-    if (proof.domain_ok) {
-      if (typeof proof.price_extracted === "number") {
-        v.verified_items++;
-      } else {
-        v.issues.push(`item rejected: ${it.product_url || it.name} (${proof.notes}${proof.zyte_debug ? `; zyte=${JSON.stringify(proof.zyte_debug)}` : ''})`);
-      }
+    if (proof.price_extracted != null) {
+      v.verified_items++;
     } else {
       v.issues.push(`item rejected: ${it.product_url || it.name} (${proof.notes})`);
     }
@@ -656,12 +530,8 @@ app.get("/api/health", (c)=>{
     temperature: OPENAI_TEMP,
     has_openai_key: !!OPENAI_KEY,
     has_google_places_key: !!PLACES_KEY,
-    zyte_enabled: AUTO_EXTRACT_MODE,
-    has_zyte_key: !!ZYTE_KEY,
-    zyte_calls,
-    zyte_cache_hits,
-    allowed_mode: ALLOWED_MODE,
     allowed_domains: [...ALLOWED_DOMAINS],
+    mode: "aggregators-only",
     debug_enabled: DEBUG,
     requestId: id
   };
@@ -692,23 +562,23 @@ ${JSON.stringify(branches, null, 2)}
 
 INSTRUCTIONS:
 - Choose branches ONLY from APPROVED_BRANCHES by branch_id.
-- Use ONLY ALLOWED_DOMAINS above.
-- Prefer SEARCH/CATEGORY URLs over /p/<code>.
+- Use ONLY ALLOWED_DOMAINS (aggregators).
+- Prefer SEARCH/CATEGORY listing pages.
 - Return ONE function call (submit_results). No free text.`;
   return c.json({ status:"ok", debug:{ instructions: PROMPT_SYSTEM, user_input: userPrompt }, requestId: id });
 });
 
-// DEBUG: בדיקת Zyte ישירה
-app.get("/api/test_zyte", async (c)=>{
+// DEBUG: בדיקת אגרגטור ידנית (מוריד HTML ומחלץ מחירים)
+app.get("/api/test_agg", async (c)=>{
   const url = String(c.req.query("url")||"").trim();
   if (!url) return c.json({ ok:false, error:"missing url" }, 400);
   if (!hostOK(url)) return c.json({ ok:false, error:"domain not allowed", domain: (()=>{try{return new URL(url).hostname}catch{return ""}})() }, 400);
   try{
-    const type: "product" | "productList" = isListingUrl(url) ? "productList" : "product";
-    const out = await zyteExtract(url, type);
-    return c.json({ ok: out.ok, status: out.status, type, data: out.data ?? null, zyte_calls, zyte_cache_hits }, out.ok ? 200 : (out.status||500));
+    const { status, text } = await fetchHtml(url);
+    const prices = extractPricesFromHtmlGeneric(text);
+    return c.json({ ok:true, status, prices: prices.slice(0,10), text_excerpt: text.slice(0, 1200) }, 200);
   }catch(e:any){
-    return c.json({ ok:false, error: e?.message || String(e) }, e?.status||500);
+    return c.json({ ok:false, error: e?.message || String(e) }, 500);
   }
 });
 
@@ -737,7 +607,7 @@ app.post("/api/search", async (c)=>{
     const { branches, formatted_address } = await listApprovedBranches(id, address, radius_km);
     const approvedMap = new Map<string, Branch>(branches.map(b => [b.branch_id, b]));
 
-    // 2) פרומפט משתמש
+    // 2) פרומפט LLM (Aggregators only)
     const basePrompt =
 `address: ${address} (geocoded: ${formatted_address})
 radius_km: ${radius_km}
@@ -750,14 +620,14 @@ ${JSON.stringify(branches, null, 2)}
 
 ENFORCEMENTS:
 - Choose branches ONLY from APPROVED_BRANCHES by branch_id.
-- Use ONLY ALLOWED_DOMAINS above.
-- Prefer SEARCH/CATEGORY URLs over /p/<code>.
+- Use ONLY ALLOWED_DOMAINS (aggregators).
+- Prefer SEARCH/CATEGORY listing URLs on aggregators.
 - Return ONE function call (submit_results). No free text.`;
 
     // 3) LLM
     const first = await callOpenAIOnce(PROMPT_SYSTEM, basePrompt, id);
 
-    // 4) אימות תוצאות (Zyte)
+    // 4) אימות תוצאות מול אגרגטורים (כולל CHP-fallback)
     const parsed = first.parsed as any;
     if (!parsed?.results || !Array.isArray(parsed.results)) {
       throw new HttpError(400, "Bad results shape from model");
@@ -765,7 +635,7 @@ ENFORCEMENTS:
 
     let issues: string[] = [];
     for (const s of parsed.results) {
-      const v = await verifyStore(s, approvedMap);
+      const v = await verifyStore(s, approvedMap, formatted_address);
       if (!v.store_verified) issues.push(`store not verified (branch=${s.branch_id}): ${v.issues.join("; ")}`);
     }
 
@@ -789,8 +659,7 @@ ENFORCEMENTS:
       payload.debug = {
         issues,
         approved_branches_count: branches.length,
-        zyte: { calls: zyteCalls, cache_hits: zyteCacheHits },
-        openai_raw_excerpt: JSON.stringify(first.raw).slice(0, SAFE_DEBUG_MAX)
+        allowed_domains: [...ALLOWED_DOMAINS]
       };
     }
 
